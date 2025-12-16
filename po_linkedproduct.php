@@ -267,7 +267,7 @@ class Po_linkedproduct extends Module
                         return $max + 1;
                     };
 
-                    $this->persistGeneratedGroups($groups, $priority, $db, $languages, $defaultLangId, $getNextPosition);
+                    $this->persistGeneratedGroups($groups, $priority, $db, $languages, $defaultLangId, $getNextPosition, $existingGroups);
 
                     $this->_html .= $this->displayConfirmation($this->l('Powiązania zostały wygenerowane i zapisane.'));
                 }
@@ -557,7 +557,7 @@ protected function deleteGroup(int $groupId): void
  * @param int        $defaultLangId
  * @param callable   $getNextPosition – callable(\Db $db): int   (fallback numeru pozycji)
  */
-protected function persistGeneratedGroups(array $groups, array $priority, \Db $db, array $languages, int $defaultLangId, callable $getNextPosition): void
+protected function persistGeneratedGroups(array $groups, array $priority, \Db $db, array $languages, int $defaultLangId, callable $getNextPosition, array $existingGroups = []): void
 {
     if (empty($groups)) {
         throw new \RuntimeException('Brak wygenerowanych grup.');
@@ -566,6 +566,15 @@ protected function persistGeneratedGroups(array $groups, array $priority, \Db $d
     $db->execute('START TRANSACTION');
 
     try {
+        $existingMap = [];
+        foreach ($existingGroups as $existing) {
+            $title = (string) ($existing['title'][$defaultLangId] ?? reset($existing['title']) ?? '');
+            $normalized = Tools::strtolower(trim($title));
+            if ($normalized !== '' && !isset($existingMap[$normalized])) {
+                $existingMap[$normalized] = (int) ($existing['id'] ?? 0);
+            }
+        }
+        
         foreach ($groups as $group) {
             if (empty($group['products']) || !is_array($group['products'])) {
                 continue;
@@ -606,6 +615,12 @@ protected function persistGeneratedGroups(array $groups, array $priority, \Db $d
 
             // 🔹 Sprawdzenie ID (czy aktualizacja czy nowa grupa)
             $incomingGroupId = (int)($group['linked_id'] ?? $group['id'] ?? 0);
+            if ($incomingGroupId <= 0) {
+                $normalizedTitle = Tools::strtolower(trim((string)($titleByLang[$defaultLangId] ?? '')));
+                if ($normalizedTitle !== '' && isset($existingMap[$normalizedTitle])) {
+                    $incomingGroupId = $existingMap[$normalizedTitle];
+                }
+            }
             $groupId         = 0;
 
             if ($incomingGroupId > 0) {
@@ -1152,7 +1167,7 @@ $prompt .= "\n\nProdukty do powiązania:\n".implode("\n", $lines);
 if (!empty($existingGroups)) {
     $prompt .= "\n\nSugerowane grupy wariantów (już istnieją w bazie):\n"
              . json_encode($existingGroups, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
-    $prompt .= "\n\nTwoje zadanie: wygeneruj **tylko brakujące grupy**.";
+    $prompt .= "\n\nTwoje zadanie: wygeneruj **tylko brakujące grupy**. Jeśli widzisz pasującą grupę, w polu linked_id podaj jej id, aby ją uzupełnić zamiast tworzyć nową.";
 }
 
 // reguły końcowe
@@ -1192,6 +1207,7 @@ protected function fetchExistingGroups(array $ids): array
         $gid = (int)$row['id'];
         if (!isset($groups[$gid])) {
             $groups[$gid] = [
+                'id'       => $gid,
                 'type'     => $row['type'],
                 'title'    => [],
                 'products' => [],
@@ -1292,7 +1308,8 @@ protected function getSystemPrompt(string $suggestedGroups = ''): string
 - Dla każdego pola title i values utwórz tłumaczenia dla wszystkich języków (klucze = id_lang).
 - Tłumaczenia muszą być naturalne dla danego języka.
 
-19. Jeżeli istnieją już grupy wariantów w sekcji „Istniejące grupy wariantów”, nie powtarzaj ich – generuj tylko brakujące.
+19. Jeżeli istnieją już grupy wariantów w sekcji „Istniejące grupy wariantów”, nie powtarzaj ich – generuj tylko brakujące. 
+    Jeśli znajdziesz pasującą nazwę parametru, ustaw w JSON pole "linked_id" z id podanym w sekcji istniejących grup i aktualizuj tę grupę zamiast tworzyć nową
 
 20. Jeśli użytkownik podał „Sugerowane grupy do wygenerowania”, potraktuj je priorytetowo.
 
@@ -1314,6 +1331,7 @@ protected function getSystemPrompt(string $suggestedGroups = ''): string
 
 24. Format JSON:
 [ { "type": "text", "position": 1, "title": { "1": "{{GROUP_TITLE}}" }, "products": [<product_id>, ...], "values": { "<product_id>": { "1": "<string>" } } } ]
+- Jeśli grupa odpowiada istniejącej pozycji z listy, dodaj pole linked_id z jej id (wtedy grupa ma być zaktualizowana).
 - Obsłuż także pole position zgodnie z podanym (np. pozycja 90).
 
 25. Przed wygenerowaniem JSON ZAWSZE wygeneruj checklistę kroków koncepcyjnych (7 punktów):
@@ -1341,6 +1359,7 @@ Wyjście musi być poprawną tablicą JSON (bez komentarzy, markdown, czy wyjaś
   {
     "type": "text",
     "position": 1,
+    "linked_id": <id_istniejącej_grupy>,
     "title": { "1": "{{GROUP_TITLE}}" },
     "products": [<product_id>, ...],
     "values": {
@@ -1351,6 +1370,7 @@ Wyjście musi być poprawną tablicą JSON (bez komentarzy, markdown, czy wyjaś
 ]
 - Użyj id_lang = 1 dla polskiego.
 - "products" zawiera produkty z jednoznacznym {{GROUP_TITLE}} (wyodrębnionym z nazwy produktu: S, M, L).
+- Jeśli grupa jest kontynuacją istniejącej z listy, ustaw "linked_id" na jej identyfikator, aby dołączyć brakujące warianty.
 - Wartości w "values" powinny być zgodne z wartością {{GROUP_TITLE}} z nazwy produktu lub z wartości wyodrębnionej podczas ekstrakcji.
 - Nie twórz wartości/grup, jeśli wartość parametru produktu jest niejednoznaczna lub nie da się jej jednoznacznie określić – taki produkt pomiń bez raportowania błędu.
 
