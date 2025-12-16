@@ -1,0 +1,47 @@
+services:
+  _defaults:
+    public: true
+
+  piano.linked_product.module:
+    class: Po_linkedproduct
+    factory: [ 'Module', 'getInstanceByName' ]
+    public: false
+    arguments:
+      - 'po_linkedproduct'
+
+  piano.linked_product.hook.abstract_hook:
+    class: Piano\LinkedProduct\Hook\AbstractHook
+    public: true
+    arguments:
+      - '@piano.linked_product.module'
+      - "@=service('prestashop.adapter.legacy.context').getContext()"
+
+  piano.linked_product.hook.abstract_display_hook:
+    class: Piano\LinkedProduct\Hook\AbstractDisplayHook
+    parent: 'piano.linked_product.hook.abstract_hook'
+    public: true
+
+  piano.linked_product.hook.display_back_office_header:
+    class: Piano\LinkedProduct\Hook\DisplayBackOfficeHeader
+    parent: 'piano.linked_product.hook.abstract_hook'
+    public: true
+
+  piano.linked_product.hook.display_header:
+    class: Piano\LinkedProduct\Hook\DisplayHeader
+    parent: 'piano.linked_product.hook.abstract_hook'
+    public: true
+
+  piano.linked_product.hook.action_product_update:
+    class: Piano\LinkedProduct\Hook\ActionProductUpdate
+    parent: 'piano.linked_product.hook.abstract_hook'
+    public: true
+
+  piano.linked_product.hook.display_product_linked:
+    class: Piano\LinkedProduct\Hook\DisplayProductLinked
+    parent: 'piano.linked_product.hook.abstract_display_hook'
+    public: true
+
+  piano.linked_product.hook.display_admin_products_extra:
+    class: Piano\LinkedProduct\Hook\DisplayAdminProductsExtra
+    parent: 'piano.linked_product.hook.abstract_hook'
+    public: true

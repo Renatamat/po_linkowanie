@@ -1,0 +1,2210 @@
+<?php
+
+declare(strict_types=1);
+
+if (!defined('_PS_VERSION_')) {
+    exit;
+}
+
+class Po_linkedproduct extends Module
+{
+    /** @var string */
+    protected $_html = '';
+
+
+    public function __construct()
+    {
+        $this->name = 'po_linkedproduct';
+        $this->tab = 'others';
+        $this->version = '1.0.0';
+        $this->author = 'Przemysław Markiewicz';
+        $this->need_instance = 0;
+        $this->bootstrap = true;
+
+        parent::__construct();
+
+        $this->displayName = $this->l('Linkowanie produktów');
+        $this->description = $this->l('Moduł do powiązywania produktów między sobą');
+
+        $this->ps_versions_compliancy = ['min' => '8.0.0', 'max' => _PS_VERSION_];
+        $this->languages = \Language::getLanguages(false);
+    }
+
+    public function install()
+    {
+        Configuration::updateValue('PO_LINKEDPRODUCT_LIVE_MODE', false);
+        Configuration::updateValue('PO_LINKEDPRODUCT_OPENAI_URL', '');
+        Configuration::updateValue('PO_LINKEDPRODUCT_OPENAI_KEY', '');
+
+        include(dirname(__FILE__).'/sql/install.php');
+
+        return parent::install()
+            && $this->registerHook('displayHeader')
+            && $this->registerHook('backOfficeHeader')
+            && $this->registerHook('displayBackOfficeHeader')
+            && $this->registerHook('displayAdminProductsExtra')
+            && $this->registerHook('displayProductLinked')
+            && $this->registerHook('actionProductUpdate');
+    }
+
+    public function uninstall()
+    {
+        Configuration::deleteByName('PO_LINKEDPRODUCT_LIVE_MODE');
+        Configuration::deleteByName('PO_LINKEDPRODUCT_OPENAI_URL');
+        Configuration::deleteByName('PO_LINKEDPRODUCT_OPENAI_KEY');
+
+        include(dirname(__FILE__).'/sql/uninstall.php');
+
+        return parent::uninstall();
+    }
+
+    protected function getCurrentToken(): string
+{
+    if (!empty($this->context->controller->token)) {
+        return $this->context->controller->token;
+    }
+    return Tools::getAdminTokenLite('AdminModules');
+}
+
+    /**
+     * BO Content
+     */
+ public function getContent()
+{
+    // bufor na komunikaty
+    $this->_html = '';
+
+    if (Tools::isSubmit('lp_action')) {
+        $action = (string) Tools::getValue('lp_action');
+
+        if (Tools::getValue('lp_ajax') === '1' && $action === 'mass_update_field') {
+            $this->processMassUpdateFieldAjax();
+        }
+
+        try {
+            switch ($action) {
+
+                case 'delete_group':
+                    $gid = (int) Tools::getValue('group_id');
+                    if (!$gid) {
+                        $arr = Tools::getValue('group_id');
+                        if (is_array($arr)) {
+                            // kliknięty checkbox przychodzi jako tablica – bierzemy pierwszy klucz
+                            $gid = (int) key($arr);
+                        }
+                    }
+                    if ($gid > 0) {
+                        $this->deleteGroup($gid);
+                        $this->_html .= $this->displayConfirmation($this->l('Grupa została usunięta.'));
+                    }
+                    break;
+
+                case 'delete_row':
+                    $rowId = (int) Tools::getValue('row_id');
+                    $this->deleteRow($rowId);
+                    $this->_html .= $this->displayConfirmation($this->l('Powiązanie produktu zostało usunięte.'));
+                    break;
+
+                case 'update_group':
+                    $gid      = (int) Tools::getValue('group_id');
+                    $position = (int) Tools::getValue('position', 0);
+                    $type     = pSQL((string) Tools::getValue('type', 'text'));
+
+                    // tytuły we wszystkich językach: title[<id_lang>]
+                    $titles = [];
+                    foreach ($this->languages as $lang) {
+                        $idLang = (int) $lang['id_lang'];
+                        $titles[$idLang] = (string) Tools::getValue('title_'.$idLang, '');
+                    }
+
+                    $this->updateGroup($gid, $titles, $position, $type);
+                    $this->_html .= $this->displayConfirmation($this->l('Grupa została zaktualizowana.'));
+                    break;
+
+                case 'mass_update':
+                    $groups = Tools::getValue('groups', []);
+                    $rows   = Tools::getValue('rows', []);
+
+                    // --- Aktualizacja grup ---
+                    foreach ($groups as $gid => $data) {
+                        $this->updateGroup(
+                            (int) $gid,
+                            $data['title'] ?? [],
+                            (int) ($data['position'] ?? 0),
+                            (string) ($data['type'] ?? 'text')
+                        );
+                    }
+
+                    // --- Aktualizacja wierszy ---
+                    $db = \Db::getInstance();
+
+                    // (opcjonalnie) transakcja, żeby mieć spójny zapis
+                    $db->execute('START TRANSACTION');
+                    try {
+                        foreach ($rows as $rowId => $data) {
+                            foreach ($this->languages as $lang) {
+                                $idLang = (int) $lang['id_lang'];
+                                $val    = $data['value'] ?? '';
+
+                                $exists = (int) $db->getValue(
+                                    'SELECT COUNT(*)
+                                     FROM ' . _DB_PREFIX_ . 'po_linkedproduct_row_lang
+                                     WHERE id_row = ' . (int) $rowId . '
+                                       AND id_lang = ' . $idLang
+                                );
+
+                                if ($exists) {
+                                    $db->update(
+                                        'po_linkedproduct_row_lang',
+                                        ['value' => pSQL($val)],
+                                        'id_row = ' . (int) $rowId . ' AND id_lang = ' . $idLang
+                                    );
+                                } else {
+                                    $db->insert(
+                                        'po_linkedproduct_row_lang',
+                                        [
+                                            'id_row'  => (int) $rowId,
+                                            'id_lang' => $idLang,
+                                            'value'   => pSQL($val),
+                                        ]
+                                    );
+                                }
+                            }
+                        }
+                        $db->execute('COMMIT');
+                    } catch (\Exception $txe) {
+                        $db->execute('ROLLBACK');
+                        throw $txe;
+                    }
+
+                    $this->_html .= $this->displayConfirmation($this->l('Zmiany zapisane.'));
+                    break;
+            }
+        } catch (\Exception $e) {
+            $this->_html .= $this->displayError(
+                $this->l('Błąd akcji: ') . $e->getMessage()
+            );
+        }
+    }
+
+    // ----- UI -----
+    $output = '<h2>'.$this->displayName.'</h2>';
+
+    $tab = Tools::getValue('po_tab', 'settings');
+
+    if (Tools::isSubmit('generate_linked')) {
+        try {
+            $selected = Tools::getValue('selected_products', []);
+            if (empty($selected) || !is_array($selected)) {
+                $this->_html .= $this->displayError($this->l('Musisz wybrać co najmniej jeden produkt.'));
+            } else {
+                $ids = array_map('intval', $selected);
+
+                $names = \Db::getInstance()->executeS('
+                    SELECT p.id_product, pl.name, pl.link_rewrite
+                    FROM '._DB_PREFIX_.'product p
+                    INNER JOIN '._DB_PREFIX_.'product_lang pl
+                        ON (pl.id_product = p.id_product AND pl.id_lang='.(int)$this->context->language->id.')
+                    WHERE p.id_product IN ('.implode(',', $ids).')
+                ');
+
+                $lines = [];
+                foreach ($names as $row) {
+                    $lines[] = (int)$row['id_product'].' | '.$row['name'];
+                }
+
+                $userPrompt = "Produkty do powiązania:\n".implode("\n", $lines);
+
+                $chunks = array_chunk($ids, 500);
+                $groups = [];
+                $suggestedGroups     = (string) Tools::getValue('suggested_groups', '');
+                $suggestedPriorities = (string) Tools::getValue('suggested_priorities', '');
+                $order = array_map('trim', explode(',', $suggestedGroups));
+
+                $priority = [];
+                $pos = 1;
+                foreach ($order as $name) {
+                    if ($name !== '') {
+                        $priority[mb_strtolower($name)] = $pos++;
+                    }
+                }
+
+                $existingGroups = $this->fetchExistingGroups($ids);
+
+                foreach ($chunks as $chunk) {
+                    $names  = $this->fetchProductsData($chunk);
+                    $prompt = $this->buildUserPrompt($names, $existingGroups, $suggestedGroups, $suggestedPriorities);
+
+                    \PrestaShopLogger::addLog(
+                        '[PO_LINKEDPRODUCT][DEBUG] USER PROMPT: ' . Tools::substr($prompt, 0, 50000),
+                        1,
+                        null,
+                        'Po_linkedproduct'
+                    );
+
+                    $result = $this->callOpenAi($this->getSystemPrompt($suggestedGroups), $prompt);
+
+                    \PrestaShopLogger::addLog(
+                        '[PO_LINKEDPRODUCT][DEBUG] OPENAI RESULT: ' . Tools::substr(json_encode($result, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE), 0, 50000),
+                        3,
+                        null,
+                        'Po_linkedproduct'
+                    );
+
+                    $groups = array_merge($groups, $result);
+                }
+
+                if (!is_array($groups) || empty($groups)) {
+                    $this->_html .= $this->displayError($this->l('Brak wygenerowanych powiązań.'));
+                } else {
+                    $db            = \Db::getInstance();
+                    $languages     = \Language::getLanguages(false);
+                    $defaultLangId = (int) \Configuration::get('PS_LANG_DEFAULT');
+
+                    // helper pozycji – wykorzystuje już otwarte połączenie $db
+                    $getNextPosition = function () use ($db): int {
+                        $max = (int) $db->getValue('SELECT IFNULL(MAX(position), 0) FROM '._DB_PREFIX_.'po_linkedproduct');
+                        return $max + 1;
+                    };
+
+                    $this->persistGeneratedGroups($groups, $priority, $db, $languages, $defaultLangId, $getNextPosition);
+
+                    $this->_html .= $this->displayConfirmation($this->l('Powiązania zostały wygenerowane i zapisane.'));
+                }
+            }
+        } catch (\Exception $e) {
+            $this->_html .= $this->displayError(
+                $this->l('Wystąpił błąd podczas generowania powiązań: ') . $e->getMessage()
+            );
+        }
+    }
+
+    // zakładki
+    $output .= '<ul class="nav nav-tabs">';
+    $output .= '<li'.($tab === 'settings' ? ' class="active"' : '').'>
+        <a href="'.$this->context->link->getAdminLink('AdminModules', true)
+            .'&configure='.$this->name.'&po_tab=settings">'
+            .$this->l('Ustawienia').'</a></li>';
+    $output .= '<li'.($tab === 'generator' ? ' class="active"' : '').'>
+        <a href="'.$this->context->link->getAdminLink('AdminModules', true)
+            .'&configure='.$this->name.'&po_tab=generator">'
+            .$this->l('Generator').'</a></li>';
+    $output .= '<li'.($tab === 'mass_edit' ? ' class="active"' : '').'>
+        <a href="'.$this->context->link->getAdminLink('AdminModules', true)
+            .'&configure='.$this->name.'&po_tab=mass_edit">'
+            .$this->l('Masowa edycja').'</a></li>';
+    $output .= '</ul><div style="margin-top:20px;">';
+
+    $output .= ($tab === 'generator')
+        ? $this->renderGenerator()
+        : (($tab === 'mass_edit') ? $this->renderMassEdit() : $this->renderSettingsForm());
+
+    $output .= '</div>';
+
+    return $this->_html . $output;
+}
+
+
+private function getNextPosition(\Db $db, ?int $productId = null): int
+{
+    $sql = 'SELECT MAX(g.position)
+            FROM '._DB_PREFIX_.'po_linkedproduct g
+            INNER JOIN '._DB_PREFIX_.'po_linkedproduct_row r ON (r.group_id=g.id)';
+    if ($productId) {
+        $sql .= ' WHERE r.product_id='.(int)$productId;
+    }
+
+    return 1 + (int)$db->getValue($sql);
+}
+
+
+protected function renderProductsWithGroups(array $rows, array $groupsMatrix, bool $editable = false): string
+{
+    $html  = '<table class="table">';
+    $html .= '<thead>
+        <tr>
+            <th style="width:70px">'.$this->l('Zdjęcie').'</th>
+            <th>'.$this->l('Nazwa').'</th>
+            <th style="width:120px">'.$this->l('Akcja').'</th>
+        </tr>
+    </thead><tbody>';
+
+    foreach ($rows as $product) {
+        $pid    = (int)$product['id_product'];
+        $image  = \Image::getCover($pid);
+        $imgUrl = '';
+
+        if ($image && isset($image['id_image'])) {
+            $imgUrl = $this->context->link->getImageLink(
+                (string)$product['link_rewrite'],
+                (int)$image['id_image'],
+                'small_default'
+            );
+        }
+
+        $html .= '<tr>';
+        $html .= '<td>'.($imgUrl ? '<img src="'.$imgUrl.'" style="height:50px">' : '-').'</td>';
+        $html .= '<td>'.htmlspecialchars((string)$product['name']).' <small class="text-muted">#'.$pid.'</small></td>';
+        $html .= '<td>
+            <a href="#" class="btn btn-default btn-xs lp-toggle" data-target="#lp-details-'.$pid.'">
+                '.$this->l('Pokaż / ukryj').'
+            </a>
+        </td>';
+        $html .= '</tr>';
+
+        // szczegóły grup
+        $groups = $groupsMatrix[$pid] ?? [];
+        $html .= '<tr class="active">
+            <td colspan="3" style="background:#fafafa">
+                <div id="lp-details-'.$pid.'" style="margin:16px 32px; display:none;">';
+
+        if (!$groups) {
+            $html .= '<div class="text-muted">'.$this->l('Brak powiązań dla tego produktu.').'</div>';
+        } else {
+            foreach ($groups as $g) {
+                $gid = (int)$g['id'];
+                $html .= '<div class="panel" style="margin-bottom:10px">
+                    <div class="panel-heading">
+                        <span class="label label-default">#'.$gid.'</span>
+                        <span class="label label-info">'.htmlspecialchars($g['type']).'</span>
+                        <strong>'.htmlspecialchars($g['title']).'</strong>
+                        <span class="text-muted">pos: '.(int)$g['position'].'</span>
+                    </div>';
+
+                if ($editable) {
+                    // formularz edycji grupy
+                    $html .= '<div style="padding:10px;border-top:1px solid #eee">';
+                    $html .= '<div class="form-inline" style="display:flex;gap:10px;flex-wrap:wrap">';
+                    $html .= '<input type="hidden" name="groups['.$gid.'][id]" value="'.$gid.'">';
+                    $html .= '<div class="form-group">
+                        <label>'.$this->l('Typ').'</label>
+                        <input class="form-control" type="text" name="groups['.$gid.'][type]" value="'.htmlspecialchars($g['type']).'" style="width:140px">
+                    </div>';
+                    $html .= '<div class="form-group">
+                        <label>'.$this->l('Pozycja').'</label>
+                        <input class="form-control" type="number" name="groups['.$gid.'][position]" value="'.(int)$g['position'].'" style="width:100px">
+                    </div>';
+                    foreach ($this->languages as $lang) {
+                        $idLangX = (int) $lang['id_lang'];
+                        $titleX = \Db::getInstance()->getValue('
+                            SELECT group_title FROM '._DB_PREFIX_.'po_linkedproduct_lang
+                            WHERE id='.(int)$gid.' AND id_lang='.(int)$idLangX
+                        ) ?: $g['title'];
+                        $html .= '<div class="form-group">
+                            <label>'.$this->l('Tytuł').' ('.$lang['iso_code'].')</label>
+                            <input class="form-control" type="text" name="groups['.$gid.'][title]['.$idLangX.']" value="'.htmlspecialchars($titleX).'" style="min-width:220px">
+                        </div>';
+                    }
+                    $html .= '</div></div>';
+                }
+
+                // lista wierszy
+                $html .= '<div class="panel-body" style="padding:10px">
+                    <table class="table table-condensed">
+                        <thead>
+                            <tr>
+                                <th>'.$this->l('Row ID').'</th>
+                                <th>'.$this->l('Produkt').'</th>
+                                <th>'.$this->l('Wartość').'</th>
+                            </tr>
+                        </thead><tbody>';
+                foreach ($g['rows'] as $r) {
+                    $html .= '<tr>
+                        <td>#'.$r['row_id'].'</td>
+                        <td>'.htmlspecialchars($r['product_name']).'</td>';
+                    if ($editable) {
+                        $html .= '<td><input class="form-control" type="text" name="rows['.$r['row_id'].'][value]" value="'.htmlspecialchars((string)($r['value'] ?? '')).'"></td>';
+                    } else {
+                        $html .= '<td>'.htmlspecialchars((string)($r['value'] ?? '')).'</td>';
+                    }
+                    $html .= '</tr>';
+                }
+                $html .= '</tbody></table></div>';
+                $html .= '</div>'; // panel
+            }
+        }
+
+        $html .= '</div></td></tr>';
+    }
+
+    $html .= '</tbody></table>';
+
+    // toggle JS
+    $html .= '<script>
+    (function(){
+        var toggles = document.querySelectorAll(".lp-toggle");
+        function onClickToggle(e){
+            e.preventDefault();
+            var t = this.getAttribute("data-target");
+            var el = document.querySelector(t);
+            if (el) el.style.display = (el.style.display==="none"||el.style.display==="")?"block":"none";
+        }
+        for(var i=0;i<toggles.length;i++){ toggles[i].addEventListener("click", onClickToggle); }
+    })();
+    </script>';
+
+    return $html;
+}
+
+
+protected function renderSettingsForm(): string
+{
+    $output = '';
+
+    if (Tools::isSubmit('submitPoLinkedProductSettings')) {
+        $live = (bool) Tools::getValue('PO_LINKEDPRODUCT_LIVE_MODE');
+        $url  = (string) Tools::getValue('PO_LINKEDPRODUCT_OPENAI_URL');
+        $key  = (string) Tools::getValue('PO_LINKEDPRODUCT_OPENAI_KEY');
+
+        Configuration::updateValue('PO_LINKEDPRODUCT_LIVE_MODE', $live);
+        Configuration::updateValue('PO_LINKEDPRODUCT_OPENAI_URL', $url);
+        Configuration::updateValue('PO_LINKEDPRODUCT_OPENAI_KEY', $key);
+
+        $output .= $this->displayConfirmation($this->l('Settings updated'));
+    }
+
+    $liveVal = (bool) Configuration::get('PO_LINKEDPRODUCT_LIVE_MODE');
+    $urlVal  = (string) Configuration::get('PO_LINKEDPRODUCT_OPENAI_URL');
+    $keyVal  = (string) Configuration::get('PO_LINKEDPRODUCT_OPENAI_KEY');
+
+    $output .= '
+    <form method="post" class="defaultForm form-horizontal">
+        <div class="panel">
+            <div class="panel-heading">'.$this->l('Ustawienia').'</div>
+            <div class="form-group">
+                <label class="control-label col-lg-3">'.$this->l('Live mode').'</label>
+                <div class="col-lg-9">
+                    <span class="switch prestashop-switch fixed-width-lg">
+                        <input type="radio" name="PO_LINKEDPRODUCT_LIVE_MODE" id="live_on" value="1" '.($liveVal ? 'checked="checked"' : '').'/>
+                        <label for="live_on">'.$this->l('Enabled').'</label>
+                        <input type="radio" name="PO_LINKEDPRODUCT_LIVE_MODE" id="live_off" value="0" '.(!$liveVal ? 'checked="checked"' : '').'/>
+                        <label for="live_off">'.$this->l('Disabled').'</label>
+                        <a class="slide-button btn"></a>
+                    </span>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label class="control-label col-lg-3">'.$this->l('OpenAI Base URL').'</label>
+                <div class="col-lg-9">
+                    <input type="text" name="PO_LINKEDPRODUCT_OPENAI_URL" value="'.htmlspecialchars($urlVal).'" class="form-control" placeholder="https://api.openai.com/v1/chat/completions" />
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label class="control-label col-lg-3">'.$this->l('OpenAI API Key').'</label>
+                <div class="col-lg-9">
+                    <input type="text" name="PO_LINKEDPRODUCT_OPENAI_KEY" value="'.htmlspecialchars($keyVal).'" class="form-control" placeholder="sk-..." />
+                </div>
+            </div>
+
+            <div class="panel-footer">
+                <button type="submit" name="submitPoLinkedProductSettings" class="btn btn-default pull-right">
+                    <i class="process-icon-save"></i> '.$this->l('Save').'
+                </button>
+            </div>
+        </div>
+    </form>';
+
+    return $output;
+}
+
+protected function deleteGroup(int $groupId): void
+{
+    if ($groupId <= 0) return;
+    $db = \Db::getInstance();
+    $db->execute('START TRANSACTION');
+
+    try {
+        // zbierz row_id z grupy
+        $rowIds = $db->executeS(
+            'SELECT id FROM '._DB_PREFIX_.'po_linkedproduct_row WHERE group_id='.(int)$groupId
+        ) ?: [];
+
+        if ($rowIds) {
+            $ids = implode(',', array_map('intval', array_column($rowIds, 'id')));
+            $db->delete('po_linkedproduct_row_lang', 'id_row IN ('.$ids.')');
+            $db->delete('po_linkedproduct_row', 'id IN ('.$ids.')');
+        }
+
+        // usuń powiązania z produktami (to blokowało usunięcie grupy!)
+        $db->delete('po_linkedproduct_position', 'group_id='.(int)$groupId);
+
+        // kasuj lang dla grupy
+        $db->delete('po_linkedproduct_lang', 'id='.(int)$groupId);
+
+        // kasuj grupę
+        $db->delete('po_linkedproduct', 'id='.(int)$groupId);
+
+        $db->execute('COMMIT');
+    } catch (\Exception $e) {
+        $db->execute('ROLLBACK');
+        throw $e;
+    }
+}
+
+/**
+ * Zapisuje pełny wynik generatora do wszystkich wymaganych tabel.
+ * - transakcja (COMMIT/ROLLBACK)
+ * - uzupełnianie brakujących tłumaczeń z języka domyślnego
+ * - pozycje grupy globalnie + pozycje specyficzne per produkt (po_linkedproduct_position)
+ * - czyszczenie poprzednich wierszy grupy przy aktualizacji (opcjonalnie)
+ *
+ * @param array      $groups  – wynik z OpenAI (lista grup)
+ * @param array      $priority – mapa priorytetów [lower(title) => position]
+ * @param \Db        $db
+ * @param array      $languages – Language::getLanguages(false)
+ * @param int        $defaultLangId
+ * @param callable   $getNextPosition – callable(\Db $db): int   (fallback numeru pozycji)
+ */
+protected function persistGeneratedGroups(array $groups, array $priority, \Db $db, array $languages, int $defaultLangId, callable $getNextPosition): void
+{
+    if (empty($groups)) {
+        throw new \RuntimeException('Brak wygenerowanych grup.');
+    }
+
+    $db->execute('START TRANSACTION');
+
+    try {
+        foreach ($groups as $group) {
+            if (empty($group['products']) || !is_array($group['products'])) {
+                continue;
+            }
+
+            $productIds = array_values(array_unique(array_filter(
+                array_map('intval', $group['products']),
+                static fn($v) => $v > 0
+            )));
+            if (!$productIds) {
+                continue;
+            }
+
+            $type        = pSQL((string)($group['type'] ?? 'text'));
+            $titleByLang = is_array($group['title'] ?? null) ? $group['title'] : [];
+
+            // 🔹 Fallback brakujących tłumaczeń
+            foreach ($languages as $lang) {
+                $idLang = (int)$lang['id_lang'];
+                if (empty($titleByLang[$idLang])) {
+                    $titleByLang[$idLang] = (string)($titleByLang[$defaultLangId] ?? '');
+                }
+            }
+
+            // 🔹 PRIORYTET POZYCJI — JSON → priorytet → auto
+            $jsonPos  = (int)($group['position'] ?? 0);
+
+            $titleForPriority = mb_strtolower($titleByLang[$defaultLangId] ?? '');
+            $prioPos = $priority[$titleForPriority] ?? 0;
+
+            if ($jsonPos > 0) {
+                $groupPosition = $jsonPos;
+            } elseif ($prioPos > 0) {
+                $groupPosition = (int)$prioPos;
+            } else {
+                $groupPosition = (int)$getNextPosition();
+            }
+
+            // 🔹 Sprawdzenie ID (czy aktualizacja czy nowa grupa)
+            $incomingGroupId = (int)($group['linked_id'] ?? $group['id'] ?? 0);
+            $groupId         = 0;
+
+            if ($incomingGroupId > 0) {
+                // 🔹 UPDATE istniejącej grupy
+                $db->update('po_linkedproduct', [
+                    'type'     => $type,
+                    'position' => $groupPosition,
+                ], 'id='.(int)$incomingGroupId);
+
+                $groupId = $incomingGroupId;
+
+                // 🔹 Upsert tytułów wielojęzycznych
+                foreach ($languages as $lang) {
+                    $idLang = (int)$lang['id_lang'];
+                    $exists = (int)$db->getValue(
+                        'SELECT COUNT(*) FROM '._DB_PREFIX_.'po_linkedproduct_lang WHERE id='.(int)$groupId.' AND id_lang='.(int)$idLang
+                    );
+                    if ($exists) {
+                        $db->update('po_linkedproduct_lang', [
+                            'group_title' => pSQL($titleByLang[$idLang]),
+                        ], 'id='.(int)$groupId.' AND id_lang='.(int)$idLang);
+                    } else {
+                        $db->insert('po_linkedproduct_lang', [
+                            'id'          => $groupId,
+                            'id_lang'     => $idLang,
+                            'group_title' => pSQL($titleByLang[$idLang]),
+                        ]);
+                    }
+                }
+
+                // 🔹 Czyścimy stare wiersze
+                $rows = $db->executeS('SELECT id FROM '._DB_PREFIX_.'po_linkedproduct_row WHERE group_id='.(int)$groupId);
+                foreach ($rows as $r) {
+                    $db->delete('po_linkedproduct_row_lang', 'id_row='.(int)$r['id']);
+                }
+                $db->delete('po_linkedproduct_row', 'group_id='.(int)$groupId);
+
+            } else {
+                // 🔹 NOWA grupa
+                $db->insert('po_linkedproduct', [
+                    'type'     => $type,
+                    'position' => $groupPosition,
+                ]);
+                $groupId = (int)$db->Insert_ID();
+
+                foreach ($languages as $lang) {
+                    $idLang = (int)$lang['id_lang'];
+                    $db->insert('po_linkedproduct_lang', [
+                        'id'          => $groupId,
+                        'id_lang'     => $idLang,
+                        'group_title' => pSQL($titleByLang[$idLang]),
+                    ]);
+                }
+            }
+
+            // 🔹 Pozycja per produkt (opcjonalnie z JSON)
+            foreach ($productIds as $pid) {
+                $perProductPos = $group['positions'][$pid] ?? null;
+                $finalPos      = $perProductPos !== null ? (int)$perProductPos : $groupPosition;
+
+                $db->execute('REPLACE INTO '._DB_PREFIX_.'po_linkedproduct_position (product_id, group_id, position) 
+                    VALUES ('.(int)$pid.', '.(int)$groupId.', '.(int)$finalPos.')');
+            }
+
+            // 🔹 Wiersze + wartości językowe
+            $values = $group['values'] ?? [];
+
+            foreach ($productIds as $pid) {
+                $db->insert('po_linkedproduct_row', [
+                    'group_id'   => $groupId,
+                    'product_id' => $pid,
+                    'value'      => '',
+                ]);
+                $rowId = (int)$db->Insert_ID();
+
+                foreach ($languages as $lang) {
+                    $idLang = (int)$lang['id_lang'];
+                    $val    = $values[$pid][$idLang] ?? ($values[$pid][$defaultLangId] ?? '');
+                    $db->insert('po_linkedproduct_row_lang', [
+                        'id_row'  => $rowId,
+                        'id_lang' => $idLang,
+                        'value'   => pSQL($val),
+                    ]);
+                }
+            }
+        }
+
+        $db->execute('COMMIT');
+
+    } catch (\Throwable $e) {
+        $db->execute('ROLLBACK');
+        throw $e;
+    }
+}
+
+
+
+
+
+protected function deleteRow(int $rowId): void
+{
+    if ($rowId <= 0) return;
+    $db = \Db::getInstance();
+    $db->execute('START TRANSACTION');
+
+    try {
+        // pobierz group_id by ewentualnie posprzątać pustą grupę
+        $gid = (int) $db->getValue('SELECT group_id FROM '._DB_PREFIX_.'po_linkedproduct_row WHERE id='.(int)$rowId);
+
+        $db->delete('po_linkedproduct_row_lang', 'id_row='.(int)$rowId);
+        $db->delete('po_linkedproduct_row', 'id='.(int)$rowId);
+
+        if ($gid) {
+            // jeśli grupa nie ma już wierszy – usuń ją
+            $left = (int) $db->getValue('SELECT COUNT(*) FROM '._DB_PREFIX_.'po_linkedproduct_row WHERE group_id='.(int)$gid);
+            if ($left === 0) {
+                $db->delete('po_linkedproduct_lang', 'id='.(int)$gid);
+                $db->delete('po_linkedproduct', 'id='.(int)$gid);
+            }
+        }
+
+        $db->execute('COMMIT');
+    } catch (\Exception $e) {
+        $db->execute('ROLLBACK');
+        throw $e;
+    }
+}
+
+protected function updateGroup(int $groupId, array $titles, int $position, string $type): void
+{
+    if ($groupId <= 0) return;
+
+    $db = \Db::getInstance();
+    $db->execute('START TRANSACTION');
+
+    try {
+        $db->update('po_linkedproduct', [
+            'type'     => pSQL($type),
+            'position' => (int) $position,
+        ], 'id='.(int)$groupId);
+
+        // fallback dla brakujących tłumaczeń: użyj domyślnego
+        $defaultLangId = (int) Configuration::get('PS_LANG_DEFAULT');
+        $fallback = $titles[$defaultLangId] ?? reset($titles) ?? '';
+
+        foreach ($this->languages as $lang) {
+            $idLang = (int) $lang['id_lang'];
+            $title  = (string) ($titles[$idLang] ?? $fallback);
+
+            // czy istnieje rekord?
+            $exists = (int) $db->getValue('SELECT COUNT(*) FROM '._DB_PREFIX_.'po_linkedproduct_lang WHERE id='.(int)$groupId.' AND id_lang='.(int)$idLang);
+            if ($exists) {
+                $db->update('po_linkedproduct_lang', [
+                    'group_title' => pSQL($title),
+                ], 'id='.(int)$groupId.' AND id_lang='.(int)$idLang);
+            } else {
+                $db->insert('po_linkedproduct_lang', [
+                    'id'          => (int)$groupId,
+                    'id_lang'     => (int)$idLang,
+                    'group_title' => pSQL($title),
+                ]);
+            }
+        }
+
+        $db->execute('COMMIT');
+    } catch (\Exception $e) {
+        $db->execute('ROLLBACK');
+        throw $e;
+    }
+}
+
+protected function processMassUpdateFieldAjax(): void
+{
+    header('Cache-Control: no-cache, must-revalidate');
+    header('Expires: 0');
+    header('Content-Type: application/json');
+
+    try {
+        if (!$this->isValidToken()) {
+            throw new \Exception($this->l('Nieprawidłowy token.'));
+        }
+
+        $target = (string) Tools::getValue('target', '');
+        $message = '';
+
+        if ($target === 'group') {
+            $message = $this->saveAjaxGroupField();
+        } elseif ($target === 'row') {
+            $message = $this->saveAjaxRowField();
+        } else {
+            throw new \Exception($this->l('Nieznany typ pola.'));
+        }
+
+        echo json_encode([
+            'success' => true,
+            'message' => $message,
+        ]);
+    } catch (\Exception $e) {
+        if (!headers_sent()) {
+            http_response_code(400);
+        }
+
+        echo json_encode([
+            'success' => false,
+            'message' => $e->getMessage(),
+        ]);
+    }
+
+    exit;
+}
+
+
+protected function saveAjaxGroupField(): string
+{
+    $groupId = (int) Tools::getValue('group_id');
+    if ($groupId <= 0) {
+        throw new \Exception($this->l('Brak identyfikatora grupy.'));
+    }
+
+    $field = (string) Tools::getValue('field', '');
+    $value = (string) Tools::getValue('value', '');
+    $db    = \Db::getInstance();
+
+    switch ($field) {
+        case 'type':
+            if (!$db->update('po_linkedproduct', ['type' => pSQL($value)], 'id='.(int) $groupId)) {
+                throw new \Exception($this->l('Nie udało się zaktualizować typu grupy.'));
+            }
+            return $this->l('Typ grupy zapisany.');
+
+        case 'position':
+            if (!$db->update('po_linkedproduct', ['position' => (int) $value], 'id='.(int) $groupId)) {
+                throw new \Exception($this->l('Nie udało się zaktualizować pozycji grupy.'));
+            }
+            return $this->l('Pozycja grupy zapisana.');
+
+        case 'title':
+            $idLang = (int) Tools::getValue('id_lang', (int) $this->context->language->id);
+            if ($idLang <= 0) {
+                $idLang = (int) $this->context->language->id;
+            }
+
+            $exists = (int) $db->getValue('SELECT COUNT(*) FROM '._DB_PREFIX_.'po_linkedproduct_lang WHERE id='.(int) $groupId.' AND id_lang='.(int) $idLang);
+
+            if ($exists) {
+                if (!$db->update('po_linkedproduct_lang', ['group_title' => pSQL($value)], 'id='.(int) $groupId.' AND id_lang='.(int) $idLang)) {
+                    throw new \Exception($this->l('Nie udało się zapisać tytułu grupy.'));
+                }
+            } else {
+                if (!$db->insert('po_linkedproduct_lang', [
+                    'id'          => (int) $groupId,
+                    'id_lang'     => (int) $idLang,
+                    'group_title' => pSQL($value),
+                ])) {
+                    throw new \Exception($this->l('Nie udało się dodać tytułu grupy.'));
+                }
+            }
+
+            return $this->l('Tytuł grupy zapisany.');
+    }
+
+    throw new \Exception($this->l('Nieobsługiwane pole grupy.'));
+}
+
+protected function saveAjaxRowField(): string
+{
+    $rowId  = (int) Tools::getValue('row_id');
+    $idLang = (int) Tools::getValue('id_lang');
+    $value  = (string) Tools::getValue('value', '');
+
+    if ($rowId <= 0) {
+        throw new \Exception($this->l('Brak identyfikatora powiązania.'));
+    }
+    if ($idLang <= 0) {
+        $idLang = (int) $this->context->language->id;
+    }
+
+    $db = \Db::getInstance();
+
+    $exists = (int) $db->getValue('
+        SELECT COUNT(*) 
+        FROM '._DB_PREFIX_.'po_linkedproduct_row_lang
+        WHERE id_row='.(int)$rowId.' AND id_lang='.(int)$idLang
+    );
+
+    if ($exists) {
+        if (!$db->update(
+            'po_linkedproduct_row_lang',
+            ['value' => pSQL($value)],
+            'id_row='.(int)$rowId.' AND id_lang='.(int)$idLang
+        )) {
+            throw new \Exception($this->l('Nie udało się zapisać wartości powiązania.'));
+        }
+    } else {
+        if (!$db->insert('po_linkedproduct_row_lang', [
+            'id_row'  => (int)$rowId,
+            'id_lang' => (int)$idLang,
+            'value'   => pSQL($value),
+        ])) {
+            throw new \Exception($this->l('Nie udało się dodać wartości powiązania.'));
+        }
+    }
+
+    return $this->l('Wartość powiązania zapisana.');
+}
+
+
+/**
+ * Zwraca macierz powiązań dla podanych produktów.
+ * Wynik: [ product_id => [ [group], ... ] ]
+ * group: [
+ *   'id' => int, 'type' => string, 'position' => int,
+ *   'title' => string (dla $idLang),
+ *   'rows' => [ [ 'row_id'=>int, 'product_id'=>int, 'product_name'=>string, 'value'=>string|null ], ... ]
+ * ]
+ */
+protected function fetchGroupsMatrix(array $productIds, int $idLang): array
+{
+    $matrix = [];
+    if (empty($productIds)) return $matrix;
+
+    $idsSql = implode(',', array_map('intval', $productIds));
+    $db = \Db::getInstance();
+
+    // 1) Wszystkie grupy, w których występuje którykolwiek z produktów
+    $sql = '
+        SELECT g.id AS gid, g.type, g.position,
+               gl.group_title,
+               r.id AS row_id, r.product_id,
+               rl.value
+        FROM '._DB_PREFIX_.'po_linkedproduct g
+        INNER JOIN '._DB_PREFIX_.'po_linkedproduct_lang gl ON (gl.id=g.id AND gl.id_lang='.(int)$idLang.')
+        INNER JOIN '._DB_PREFIX_.'po_linkedproduct_row r ON (r.group_id=g.id)
+        LEFT JOIN '._DB_PREFIX_.'po_linkedproduct_row_lang rl ON (rl.id_row=r.id AND rl.id_lang='.(int)$idLang.')
+        WHERE r.group_id IN (
+            SELECT DISTINCT r2.group_id
+            FROM '._DB_PREFIX_.'po_linkedproduct_row r2
+            WHERE r2.product_id IN ('.$idsSql.')
+        )
+        ORDER BY g.position ASC, g.id ASC, r.id ASC
+    ';
+
+    $rows = $db->executeS($sql) ?: [];
+
+    if (!$rows) return $matrix;
+
+    // 2) Dociągnij nazwy produktów dla wszystkich product_id z tych grup
+    $allPids = array_values(array_unique(array_map('intval', array_column($rows, 'product_id'))));
+    $names = [];
+    if ($allPids) {
+      $namesSql = '
+    SELECT p.id_product, pl.name, pl.link_rewrite, i.id_image
+    FROM '._DB_PREFIX_.'product p
+    INNER JOIN '._DB_PREFIX_.'product_lang pl
+        ON (pl.id_product=p.id_product AND pl.id_lang='.(int)$idLang.' AND pl.id_shop='.(int)$this->context->shop->id.')
+    LEFT JOIN '._DB_PREFIX_.'image i ON (i.id_product = p.id_product AND i.cover = 1)
+    WHERE p.id_product IN ('.implode(',', $allPids).')
+';
+foreach ($db->executeS($namesSql) ?: [] as $n) {
+    $names[(int)$n['id_product']] = [
+        'name'        => (string)$n['name'],
+        'link_rewrite'=> (string)$n['link_rewrite'],
+        'id_image'    => (int)$n['id_image'],
+    ];
+}
+
+    }
+
+    // 3) Zbuduj strukturę i przypisz do każdego z żądanych productIds
+    // Najpierw grupy => wiersze
+    $groupsById = [];
+    foreach ($rows as $r) {
+        $gid = (int)$r['gid'];
+        if (!isset($groupsById[$gid])) {
+            $groupsById[$gid] = [
+                'id'       => $gid,
+                'type'     => (string)$r['type'],
+                'position' => (int)$r['position'],
+                'title'    => (string)$r['group_title'],
+                'rows'     => [],
+            ];
+        }
+        $pid = (int)$r['product_id'];
+        $groupsById[$gid]['rows'][] = [
+    'row_id'       => (int)$r['row_id'],
+    'product_id'   => $pid,
+    'product_name' => $names[$pid]['name'] ?? ('#'.$pid),
+    'value'        => isset($r['value']) ? (string)$r['value'] : null,
+    'image_url'    => (!empty($names[$pid]['id_image']) && !empty($names[$pid]['link_rewrite']))
+        ? $this->context->link->getImageLink($names[$pid]['link_rewrite'], $names[$pid]['id_image'], 'small_default')
+        : null,
+];
+
+    }
+
+    // Dla każdego z listowanych produktów przypnij tylko te grupy, w których faktycznie uczestniczy
+    foreach ($productIds as $pid) {
+        $pid = (int)$pid;
+        $matrix[$pid] = [];
+        foreach ($groupsById as $g) {
+            $has = false;
+            foreach ($g['rows'] as $row) {
+                if ($row['product_id'] === $pid) { $has = true; break; }
+            }
+            if ($has) {
+                $matrix[$pid][] = $g;
+            }
+        }
+    }
+
+    return $matrix;
+}
+
+
+
+
+
+
+
+
+
+    /** -------------------------
+     *  HOOKI
+     *  -------------------------
+     */
+    public function hookDisplayProductLinked($params)
+    {
+        $hook = new \Piano\LinkedProduct\Hook\DisplayProductLinked($this, \Context::getContext());
+        return $hook->run($params);
+    }
+
+    public function __call($methodName, array $arguments)
+    {
+        if (0 === strpos($methodName, 'hook')) {
+            $hook = $this->getHookObject($methodName);
+            if ($hook) {
+                return $hook->run($arguments[0] ?? []);
+            }
+        }
+        return null;
+    }
+
+    public function hookDisplayHeader($params)
+    {
+        $this->context->controller->registerJavascript(
+            'modules-po_linkedproduct-powertip',
+            'modules/' . $this->name . '/views/js/jquery.powertip.min.js',
+            ['position' => 'head', 'priority' => 100]
+        );
+
+        $this->context->controller->registerJavascript(
+            'modules-po_linkedproduct-front',
+            'modules/' . $this->name . '/views/js/front.js',
+            ['position' => 'bottom', 'priority' => 200]
+        );
+
+        $this->context->controller->registerStylesheet(
+            'modules-po_linkedproduct-style',
+            'modules/' . $this->name . '/views/css/jquery.powertip.min.css',
+            ['media' => 'all', 'priority' => 100]
+        );
+        $this->context->controller->registerStylesheet(
+            'modules-po_linkedproduct-style-front',
+            'modules/' . $this->name . '/views/css/front.css',
+            ['media' => 'all', 'priority' => 150]
+        );
+    }
+
+    private function getHookObject(string $methodName)
+    {
+        $method = lcfirst(substr($methodName, 4));
+        $snake = strtolower(preg_replace('/([a-z])([A-Z])/', '$1_$2', $method));
+        $serviceName = 'piano.linked_product.hook.' . $snake;
+
+        $container = \PrestaShop\PrestaShop\Adapter\SymfonyContainer::getInstance();
+        if (!$container) {
+            return null;
+        }
+
+        try {
+            return $container->get($serviceName);
+        } catch (\Exception $e) {
+          
+            return null;
+        }
+    }
+
+    /**
+ * Pobiera dane produktów dla danego chunku
+ */
+protected function fetchProductsData(array $ids): array
+{
+    if (empty($ids)) {
+        return [];
+    }
+
+    $sql = '
+        SELECT p.id_product, pl.name, pl.link_rewrite
+        FROM '._DB_PREFIX_.'product p
+        INNER JOIN '._DB_PREFIX_.'product_lang pl
+            ON (pl.id_product = p.id_product AND pl.id_lang='.(int)$this->context->language->id.')
+        WHERE p.id_product IN ('.implode(',', array_map('intval', $ids)).')
+    ';
+
+    return \Db::getInstance()->executeS($sql) ?: [];
+}
+
+/**
+ * Buduje prompt użytkownika na podstawie danych produktów
+ */
+protected function buildUserPrompt(
+    array $names,
+    array $existingGroups = [],
+    string $suggestedGroups = '',
+    string $suggestedPriorities = ''
+): string
+
+
+{
+  $lines = [];
+foreach ($names as $row) {
+     $lines[] = (int)$row['id_product'].' | '.$row['name'];
+}
+
+$prompt = ''; 
+
+// sugerowane grupy
+if ($suggestedGroups !== '') {
+    $prompt .= "\n\nSugerowane grupy do wygenerowania (od użytkownika):\n"
+             .$suggestedGroups;
+}
+
+// sugerowane priorytety – niezależnie
+if (!empty($suggestedPriorities)) {
+    $prompt .= "\n\nPriorytety dla grup (od użytkownika, wartości od 10 do 90):\n"
+     .$suggestedPriorities;
+       
+}
+
+// lista produktów
+$prompt .= "\n\nProdukty do powiązania:\n".implode("\n", $lines);
+
+// istniejące grupy
+if (!empty($existingGroups)) {
+    $prompt .= "\n\nSugerowane grupy wariantów (już istnieją w bazie):\n"
+             . json_encode($existingGroups, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+    $prompt .= "\n\nTwoje zadanie: wygeneruj **tylko brakujące grupy**.";
+}
+
+// reguły końcowe
+$prompt .= "\n\n⚠️ IMPORTANT:\n"
+         ."1. Generate ONLY these groups and their missing variants.\n"
+         ."2. Use exactly these names as `group_title`.\n"
+         ."3. Assign `position` field according to suggested priority if provided.\n"
+         ."4. Do not invent additional groups outside this list.\n";
+
+
+    return $prompt;
+}
+
+
+
+
+
+
+protected function fetchExistingGroups(array $ids): array
+{
+    if (empty($ids)) {
+        return [];
+    }
+
+    $db = \Db::getInstance();
+    $sql = 'SELECT g.id, g.type, gl.group_title, r.product_id, rl.value, gl.id_lang
+            FROM '._DB_PREFIX_.'po_linkedproduct g
+            INNER JOIN '._DB_PREFIX_.'po_linkedproduct_lang gl ON (gl.id=g.id)
+            INNER JOIN '._DB_PREFIX_.'po_linkedproduct_row r ON (r.group_id=g.id)
+            LEFT JOIN '._DB_PREFIX_.'po_linkedproduct_row_lang rl ON (rl.id_row=r.id)
+            WHERE r.product_id IN ('.implode(',', array_map('intval',$ids)).')';
+
+    $rows = $db->executeS($sql);
+
+    $groups = [];
+    foreach ($rows as $row) {
+        $gid = (int)$row['id'];
+        if (!isset($groups[$gid])) {
+            $groups[$gid] = [
+                'type'     => $row['type'],
+                'title'    => [],
+                'products' => [],
+                'values'   => [],
+            ];
+        }
+        $groups[$gid]['title'][$row['id_lang']] = $row['group_title'];
+        $groups[$gid]['products'][] = (int)$row['product_id'];
+        if ($row['value'] !== null) {
+            $groups[$gid]['values'][(int)$row['product_id']][$row['id_lang']] = $row['value'];
+        }
+    }
+
+    return array_values($groups);
+}
+
+    /** -------------------------
+     *  OpenAI – integracja
+     *  -------------------------
+     */
+/** -------------------------
+     *  OpenAI – integracja
+     *  -------------------------
+     */
+
+    /**
+     * Systemowy prompt – precyzyjny schemat wyjściowy
+     */
+protected function getSystemPrompt(string $suggestedGroups = ''): string
+{
+    $languages = \Language::getLanguages(false);
+    $langsInfo = [];
+    foreach ($languages as $lang) {
+        $langsInfo[] = $lang['id_lang'] . ': ' . $lang['iso_code'];
+    }
+    $langsText = implode(", ", $langsInfo);
+
+    $txt = <<<TXT
+1. Jesteś generatorem powiązań wariantów produktów dla sklepu PrestaShop.
+
+2. Nazwę grupy podajesz tylko w jednym miejscu poprzez znacznik: {{GROUP_TITLE}}.
+- Wszędzie dalej w prompcie systemowym i w danych wyjściowych odnoszą się automatycznie do wartości tego znacznika.
+- {{GROUP_TITLE}} powinna być automatycznie poddana ekstrakcji – wyodrębnij z niej prawidłową nazwę grupy (parametru), prawidłowe wartości (jeśli są podane) oraz prawidłową pozycję (jeśli jest podana).
+- ZAWSZE obsłuż placeholder {{GROUP_TITLE}} zgodnie z szablonem JSON poniżej, nigdy go nie ignoruj.
+- {{GROUP_TITLE}} może mieć również strukturę: sugerowana nazwa grupy, sugerowane wartości, sugerowana pozycja grupy, np.: Mocowanie Air Tag (Tak/Nie): pozycja 90. Wyodrębnij z tego oddzielnie: nazwę grupy = „Mocowanie Air Tag”, wartości = [„Tak”, „Nie”], pozycja = 90.
+
+3. Zasady ogólne:
+- Analizuj wszystkie podane produkty.
+- MUSISZ wybrać produkt bazowy i budować grupy wariantów WYŁĄCZNIE względem niego, stanowi on logiczny punkt odniesienia.
+
+4. Muszą zostać wygenerowane wszystkie możliwe grupy, z tym że każda obejmuje produkty różniące się dokładnie jednym parametrem i tym parametrem może być wyłącznie jeden wybrany przez użytkownika/algorytm. Nie można uwzględniać więcej niż jednego parametru w grupowaniu. Jeśli w ramach analizowanego parametru występują dodatkowe parametry (np. rozmiar), grupuj osobno dla każdego ich zestawu. 
+
+5. Każda wygenerowana grupa musi:
+- Zawierać produkt bazowy,
+- Obejmować tylko produkty, które różnią się od bazowego dokładnie jednym parametrem (nie więcej),
+- Łączyć produkty (nie pojedyncze pary!), które różnią się wyłącznie tym jednym parametrem – cała taka grupa, minimum 2 produkty, wszystkie muszą różnić się tylko jednym parametrem.
+5a. Unikaj tworzenia grup mieszanych, w których produkty różnią się więcej niż jednym parametrem.Każda grupa musi obejmować wyłącznie produkty identyczne we wszystkich innych parametrach poza analizowanym.Jeśli w ramach tego samego parametru (np. „Mocowanie Air Tag”) istnieją różne warianty innych parametrów (np. „Rozmiar”), utwórz osobne grupy dla każdego zestawu identycznych parametrów pozostałych. 
+
+6. Zasady szczegółowe:
+- Nie dołączaj do grupy produktów różniących się więcej niż jednym parametrem.
+- Jeżeli produkty różnią się różnymi pojedynczymi parametrami, utwórz osobne grupy dla każdego z nich.
+- Dla każdego parametru i produktu bazowego generuj dokładnie jedną grupę obejmującą produkt bazowy i wszystkie inne produkty identyczne z nim, oprócz tego jednego, analizowanego parametru.
+- Grupę {{GROUP_TITLE}} twórz tylko, jeśli dany rodzaj parametru występuje w różnych wartościach.
+- Nie twórz grupy {{GROUP_TITLE}}, jeśli wszystkie produkty mają tę samą wartość tego parametru.
+
+7. Nigdy nie twórz grupy nie zawierającej produktu bazowego.
+
+8. Parametry do analizy (nie ograniczone wyłącznie do poniższych):
+- Łączność (GPS, GPS + Cellular) → typ: "text"
+- Kolor (Jet Black, Space Grey, Rose Gold, Silver) → typ: "photo"
+- Rozmiar koperty (42mm, 46mm) → typ: "text"
+- Rozmiar paska (S/M, M/L, L/XL) → typ: "text"
+- Rodzaj paska (Sport Band, Milanese Loop itp.) → typ: "photo"
+- Materiał koperty (Aluminium, Titanium, Steel itp.) → typ: "photo"
+- Typ mocowania (Clamp, Adapter itp.) → typ: "text"
+- Radar (Varia 515, Varia 516 itp.) → typ: "text"
+
+9. Produkty różniące się więcej niż jednym parametrem nie powinny być grupowane.
+
+10. Podczas generowania grupy dla dowolnego parametru X dołączaj tylko produkty identyczne z produktem bazowym we wszystkich innych parametrach oprócz X.
+
+11. Każdy parametr musi tworzyć osobną grupę.
+
+12. Pole "group_title" ("title") musi jednoznacznie wskazywać nazwę parametru, tutaj: {{GROUP_TITLE}}, gdzie {{GROUP_TITLE}} powinien zostać automatycznie rozbity na: nazwę parametru, wartości oraz pozycję (jeśli są zawarte w tej strukturze). ZAWSZE wyodrębniaj te elementy i przypisuj do odpowiednich pól – nigdy nie pomijaj ekstrakcji!
+
+13. Pole "values" musi zawierać krótkie i jednoznaczne wartości dla każdego produktu (np. "S", "M", "L"). Jeżeli są podane wartości w {{GROUP_TITLE}}, używaj ich jako preferowanych etykiet.
+
+14. Każdy produkt może należeć do wielu grup, jeśli produkt bazowy również występuje w każdej z nich.
+
+15. Wynikowy JSON MUSI obejmować wszystkie produkty.
+
+16. Unikaj duplikatów – nie twórz tej samej grupy dla tego samego produktu więcej niż raz.
+
+17. Odpowiedź musi być wyłącznie poprawnym JSON-em (bez komentarzy, markdown, czy wyjaśnień).
+
+18. Zawsze generuj wynik w wielu językach.
+- Dostępne języki: {$langsText}.
+- Dla każdego pola title i values utwórz tłumaczenia dla wszystkich języków (klucze = id_lang).
+- Tłumaczenia muszą być naturalne dla danego języka.
+
+19. Jeżeli istnieją już grupy wariantów w sekcji „Istniejące grupy wariantów”, nie powtarzaj ich – generuj tylko brakujące.
+
+20. Jeśli użytkownik podał „Sugerowane grupy do wygenerowania”, potraktuj je priorytetowo.
+
+21. Jeśli użytkownik poda listę sugerowanych nazw grup (np. {{GROUP_TITLE}}):
+- Traktuj je jako kanoniczne nazwy parametrów.
+- Usuń przykładowe dopiski w nawiasach.
+- Ostateczna nazwa "title" musi dokładnie odpowiadać czystemu nazewnictwu parametru.
+- Dla rozszerzonych struktur tytułu (np. Mocowanie Air Tag (Tak/Nie): pozycja 90), obsłuż wszystkie te elementy zgodnie z podanym formatem, czyli rozbij na składowe zgodnie ze strukturą: nazwa, wartości, pozycja.
+
+22. Jeśli użytkownik poda sugerowane wartości wariantów (np. {{GROUP_TITLE}}: S, M, L):
+- Użyj tych wartości jako preferowanych etykiet.
+- Jeśli produkt pasuje do którejś z sugerowanych wartości, użyj tej etykiety dokładnie tak.
+- Jeśli w produktach są dodatkowe wartości spoza sugestii – uwzględnij je również.
+
+23. Kolejność grup powinna odpowiadać preferencjom użytkownika:
+- Lista preferencji: {{GROUP_TITLE}} (pozycja: 1) lub inna zgodnie z rozszerzonym formatem, np. pozycja 90.
+- Każda nowa grupa musi mieć pole position zgodne z tą kolejnością (jeśli podana jest jako część {{GROUP_TITLE}} – obsłuż to, wyodrębnij pozycję i ustaw na jej wartość).
+- Nazwy grup w "title" muszą być identyczne z tymi z listy (bez nawiasów i przykładów, oprócz przypadków gdy sugerowana struktura zawiera takie elementy).
+
+24. Format JSON:
+[ { "type": "text", "position": 1, "title": { "1": "{{GROUP_TITLE}}" }, "products": [<product_id>, ...], "values": { "<product_id>": { "1": "<string>" } } } ]
+- Obsłuż także pole position zgodnie z podanym (np. pozycja 90).
+
+25. Przed wygenerowaniem JSON ZAWSZE wygeneruj checklistę kroków koncepcyjnych (7 punktów):
+1. Ekstrakcja sugerowanej grupy
+2. Analiza produktów
+3. Wybranie produktu bazowego
+4. Grupowanie produktów
+5. Każda grupa musi zawierać oba warianty
+6. Sprawdzenie, czy nie powielamy istniejacych grup
+7. Walidacja: każda grupa zawiera produkt bazowy, różni się tylko jednym parametrem, nie ma duplikatów
+
+26. WALIDACJA: Po każdym istotnym etapie wstaw wyraźny krok kontrolny – krótko zweryfikuj, czy uzyskany efekt spełnia kryteria zadania (czy wybrano produkt bazowy, poprawnie rozbito {{GROUP_TITLE}}, nie wygenerowano par zamiast grup, brak duplikatów, czy uwzględniono wszystkie produkty, poprawne wyodrębnienie pozycji). Jeżeli brakuje którejkolwiek wymaganej grupy lub wartość jest niejednoznaczna, pomiń dany produkt bez raportowania błędu i przejdź do kolejnego kroku. Sprawdź, czy wszystkie produkty w danej grupie różnią się od siebie tylko jednym parametrem (tym samym).
+Jeśli jakikolwiek produkt w grupie ma inne różnice (np. inny rozmiar), rozbij grupę na mniejsze, aż warunek będzie spełniony.
+Jeśli po rozbiciu grupa ma tylko 1 produkt, pomiń ją. 
+
+### Szczegółowe wytyczne dla tego zadania:
+- Wygeneruj wszystkie grupy obejmujące produkty, które różnią się tylko jednym (tym samym) parametrem. Nie bierz pod uwagę więcej niż jednego parametru w pojedynczym grupowaniu. Przygotuj kolumny z uwzględnieniem wyodrębnionych: nazwy grupy, wartości oraz pozycji z {{GROUP_TITLE}}.
+- Użyj dokładnie tej nazwy jako "group_title" w tym formacie po ekstrakcji.
+- Przypisz "position": zgodnie z wyodrębnioną wartością lub domyślnie 1, jeśli nie podano inaczej.
+- Nie twórz żadnych innych grup niż te odpowiadające produktom różniącym się tylko jednym wybranym parametrem.
+
+### Format wyjściowy
+Wyjście musi być poprawną tablicą JSON (bez komentarzy, markdown, czy wyjaśnień), zgodnie ze schematem:
+[
+  {
+    "type": "text",
+    "position": 1,
+    "title": { "1": "{{GROUP_TITLE}}" },
+    "products": [<product_id>, ...],
+    "values": {
+      "<product_id>": { "1": "<string>" },
+      ...
+    }
+  }
+]
+- Użyj id_lang = 1 dla polskiego.
+- "products" zawiera produkty z jednoznacznym {{GROUP_TITLE}} (wyodrębnionym z nazwy produktu: S, M, L).
+- Wartości w "values" powinny być zgodne z wartością {{GROUP_TITLE}} z nazwy produktu lub z wartości wyodrębnionej podczas ekstrakcji.
+- Nie twórz wartości/grup, jeśli wartość parametru produktu jest niejednoznaczna lub nie da się jej jednoznacznie określić – taki produkt pomiń bez raportowania błędu.
+
+Zawsze generuj checklistę (jako tekst) oraz na końcu poprawny JSON według powyższej specyfikacji.
+TXT;
+
+    // 🔁 Zastępujemy znacznik {{GROUP_TITLE}} wartością z $suggestedGroups
+    $finalPrompt = str_replace('{{GROUP_TITLE}}', trim($suggestedGroups), $txt);
+
+    return $finalPrompt;
+}
+
+
+
+    /**
+     * UI Generatora: lista produktów + checkboxy + paginacja + wyszukiwarka
+     */
+protected function renderGenerator(): string
+{
+    $token  = Tools::getAdminTokenLite('AdminModules');
+    $page    = max(1, (int)Tools::getValue('p', 1));
+    $perPage = max(1, min(200, (int)Tools::getValue('n', 50)));
+    $search  = trim((string)Tools::getValue('q', ''));
+    $offset  = ($page - 1) * $perPage;
+    $idLang  = (int)$this->context->language->id;
+
+    $where = $search !== '' ? ' AND pl.name LIKE "%'.pSQL($search).'%" ' : '';
+
+    // policz
+    $sqlCount = 'SELECT COUNT(*)
+        FROM '._DB_PREFIX_.'product p
+        INNER JOIN '._DB_PREFIX_.'product_lang pl
+          ON (pl.id_product = p.id_product AND pl.id_lang='.$idLang.' AND pl.id_shop='.(int)$this->context->shop->id.')
+        WHERE 1 '.$where;
+    $total = (int)\Db::getInstance()->getValue($sqlCount);
+
+    // produkty
+    $sql = 'SELECT p.id_product, pl.name, pl.link_rewrite
+        FROM '._DB_PREFIX_.'product p
+        INNER JOIN '._DB_PREFIX_.'product_lang pl
+          ON (pl.id_product = p.id_product AND pl.id_lang='.$idLang.' AND pl.id_shop='.(int)$this->context->shop->id.')
+        WHERE 1 '.$where.'
+        ORDER BY p.id_product ASC
+        LIMIT '.(int)$perPage.' OFFSET '.(int)$offset;
+    $rows = \Db::getInstance()->executeS($sql) ?: [];
+
+    $productIds   = array_column($rows, 'id_product');
+    $groupsMatrix = $this->fetchGroupsMatrix($productIds, $idLang);
+
+    // sprawdź które mają powiązania
+    $linkeds = [];
+    if ($rows) {
+        $sqlLinked = 'SELECT DISTINCT product_id
+            FROM '._DB_PREFIX_.'po_linkedproduct_row
+            WHERE product_id IN ('.implode(',', array_map('intval', $productIds)).')';
+        foreach (\Db::getInstance()->executeS($sqlLinked) ?: [] as $lr) {
+            $linkeds[(int)$lr['product_id']] = true;
+        }
+    }
+
+    $html = '<div class="panel">';
+    $html .= '<div class="panel-heading">'.$this->l('Generator linkowania').'</div>';
+
+    // 🔍 toolbar
+    $html .= '<form method="get" class="form-inline" style="margin-bottom:15px">';
+    foreach (['controller','configure'] as $keep) {
+        if (Tools::getValue($keep) !== null) {
+            $html .= '<input type="hidden" name="'.$keep.'" value="'.htmlspecialchars((string)Tools::getValue($keep)).'">';
+        }
+    }
+    $html .= '<input type="hidden" name="po_tab" value="generator">';
+    $html .= '<div class="form-group">
+        <input class="form-control" type="text" name="q" value="'.htmlspecialchars($search).'" placeholder="'.$this->l('Szukaj po nazwie').'">
+    </div>
+    <div class="form-group">
+        <select name="n" class="form-control">';
+    foreach ([25,50,100,150,200] as $opt) {
+        $html .= '<option value="'.$opt.'"'.($perPage==$opt?' selected':'').'>'.$opt.' / '.$this->l('stronę').'</option>';
+    }
+    $html .= '</select>
+    </div>
+    <button type="submit" class="btn btn-default"><i class="icon-search"></i> '.$this->l('Szukaj').'</button>
+    </form>';
+
+    // 📋 formularz generatora
+    $html .= '<form method="post">';
+    $html .= '<input type="hidden" name="token" value="'.htmlspecialchars($token).'">';
+    $html .= '<input type="hidden" name="generate_linked" value="1">';
+
+    // pola dodatkowe
+    $html .= '<div class="form-inline" style="margin-bottom:10px">
+        <div class="form-group">
+            <label style="margin-right:8px">'.$this->l('Limit grup (opcjonalnie)').'</label>
+            <input class="form-control" type="number" min="0" name="group_count" value="'.(int)Tools::getValue('group_count', 0).'" style="width:120px">
+        </div>
+    </div>';
+    $html .= '<div class="form-group">
+        <label>'.$this->l('Sugerowane grupy do wygenerowania').'</label>
+        <textarea name="suggested_groups" class="form-control" rows="5">'.htmlspecialchars((string)Tools::getValue('suggested_groups','')).'</textarea>
+    </div>';
+    $html .= '<div class="form-group">
+        <label>'.$this->l('Priorytety grup (10–90)').'</label>
+        <textarea name="suggested_priorities" class="form-control" rows="3">'.htmlspecialchars((string)Tools::getValue('suggested_priorities','')).'</textarea>
+    </div>';
+
+    // tabela produktów
+    $html .= '<table class="table"><thead>
+        <tr>
+            <th style="width:70px">'.$this->l('Zdjęcie').'</th>
+            <th>'.$this->l('Nazwa').'</th>
+            <th style="width:120px"><input type="checkbox" id="checkAll"> '.$this->l('Zaznacz wszystkie').'</th>
+            <th style="width:100px">'.$this->l('Powiązany?').'</th>
+        </tr></thead><tbody>';
+
+    foreach ($rows as $p) {
+        $pid = (int)$p['id_product'];
+        $img = \Image::getCover($pid);
+        $imgUrl = $img && isset($img['id_image'])
+            ? $this->context->link->getImageLink($p['link_rewrite'], $img['id_image'], 'small_default')
+            : '';
+        $linked = !empty($linkeds[$pid]);
+
+       $html .= '<tr>
+            <td>'.($imgUrl ? '<img src="'.$imgUrl.'" style="height:50px">' : '-').'</td>
+            <td>'.htmlspecialchars($p['name']).' <small class="text-muted">#'.$pid.'</small></td>
+            <td><input type="checkbox" name="selected_products[]" value="'.$pid.'"></td>
+            <td class="text-center">'.($linked ? '✅' : '❌').'</td>
+        </tr>';
+
+
+        // wiersz z powiązaniami
+        $groups = $groupsMatrix[$pid] ?? [];
+        $html .= '<tr class="active"><td colspan="4" style="background:#fafafa">
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+                <strong>'.$this->l('Powiązania dla produktu').' #'.$pid.'</strong>
+                <a href="#" class="btn btn-default btn-xs lp-toggle" data-target="#lp-details-'.$pid.'">'.$this->l('Pokaż / ukryj').'</a>
+            </div>
+            <div id="lp-details-'.$pid.'" style="margin:16px 32px;display:none">';
+        if (!$groups) {
+            $html .= '<div class="text-muted">'.$this->l('Brak powiązań').'</div>';
+        } else {
+            foreach ($groups as $g) {
+                $html .= '<div class="panel" style="margin-bottom:10px">
+                    <div class="panel-heading">
+                        <span class="label label-default">#'.$g['id'].'</span>
+                        <span class="label label-info">'.htmlspecialchars($g['type']).'</span>
+                        <strong>'.htmlspecialchars($g['title']).'</strong>
+                        <span class="text-muted">pos: '.(int)$g['position'].'</span>
+                    </div>
+                    <div class="panel-body" style="padding:10px">
+                        <table class="table table-condensed"><thead>
+                            <tr>
+                                <th>'.$this->l('Row ID').'</th>
+                                <th>'.$this->l('Produkt').'</th>
+                                <th>'.$this->l('Wartość').'</th>
+                            </tr></thead><tbody>';
+                foreach ($g['rows'] as $r) {
+                    $html .= '<tr>
+                        <td>#'.$r['row_id'].'</td>
+                        <td>'.htmlspecialchars($r['product_name']).'</td>
+                        <td>'.htmlspecialchars((string)($r['value'] ?? '')).'</td>
+                    </tr>';
+                }
+                $html .= '</tbody></table></div></div>';
+            }
+        }
+        $html .= '</div></td></tr>';
+    }
+
+    if (!$rows) {
+        $html .= '<tr><td colspan="4" class="text-center text-muted">'.$this->l('Brak wyników').'</td></tr>';
+    }
+    $html .= '</tbody></table>';
+
+    $html .= '<button type="submit" class="btn btn-success">'.$this->l('Generuj powiązania').'</button>';
+    $html .= '</form>';
+
+    // 📄 paginacja
+    $pages = (int)ceil(max(1, $total) / $perPage);
+    if ($pages > 1) {
+        $html .= '<nav style="margin-top:15px"><ul class="pagination">';
+        for ($i = 1; $i <= $pages; $i++) {
+            $href = $this->context->link->getAdminLink('AdminModules', true, [], [
+                'configure' => $this->name,
+                'po_tab'    => 'generator',
+                'q'         => $search,
+                'n'         => $perPage,
+                'p'         => $i,
+            ]);
+            $html .= '<li'.($i==$page?' class="active"':'').'><a href="'.$href.'">'.$i.'</a></li>';
+        }
+        $html .= '</ul></nav>';
+    }
+
+    // JS: toggle + checkAll
+    $html .= '<script>(function(){
+        var toggles=document.querySelectorAll(".lp-toggle");
+        for(var i=0;i<toggles.length;i++){toggles[i].addEventListener("click",function(e){
+            e.preventDefault();
+            var el=document.querySelector(this.getAttribute("data-target"));
+            if(el) el.style.display=(el.style.display==="none"||el.style.display==="")?"block":"none";
+        });}
+        var checkAll=document.getElementById("checkAll");
+        if(checkAll){checkAll.addEventListener("change",function(){
+            var boxes=document.querySelectorAll("input[name=\'selected_products[]\']");
+            for(var i=0;i<boxes.length;i++){boxes[i].checked=checkAll.checked;}
+        });}
+    })();</script>';
+
+    $html .= '</div>'; // panel
+    return $html;
+}
+protected function renderMassEdit(): string
+{
+    $token = $this->context->controller->token ?: Tools::getAdminTokenLite('AdminModules');
+    $idLang = (int)$this->context->language->id;
+
+    $page    = max(1, (int)Tools::getValue('p', 1));
+    $perPage = max(1, min(200, (int)Tools::getValue('n', 50)));
+    $search  = trim((string)Tools::getValue('q', ''));
+    $offset  = ($page - 1) * $perPage;
+
+    $where = $search !== '' ? ' AND pl.name LIKE "%'.pSQL($search).'%" ' : '';
+
+    // policz produkty
+    $sqlCount = 'SELECT COUNT(*)
+        FROM '._DB_PREFIX_.'product p
+        INNER JOIN '._DB_PREFIX_.'product_lang pl 
+          ON (pl.id_product=p.id_product AND pl.id_lang='.$idLang.' AND pl.id_shop='.(int)$this->context->shop->id.')
+        WHERE 1 '.$where;
+    $total = (int)\Db::getInstance()->getValue($sqlCount);
+
+    // pobierz produkty
+    $sql = 'SELECT p.id_product, pl.name, pl.link_rewrite
+        FROM '._DB_PREFIX_.'product p
+        INNER JOIN '._DB_PREFIX_.'product_lang pl 
+          ON (pl.id_product=p.id_product AND pl.id_lang='.$idLang.' AND pl.id_shop='.(int)$this->context->shop->id.')
+        WHERE 1 '.$where.'
+        ORDER BY p.id_product ASC
+        LIMIT '.(int)$perPage.' OFFSET '.(int)$offset;
+    $rows = \Db::getInstance()->executeS($sql) ?: [];
+
+    $productIds   = array_column($rows, 'id_product');
+    $groupsMatrix = $this->fetchGroupsMatrix($productIds, $idLang);
+
+    // sprawdź które produkty są powiązane
+    $linkeds = [];
+    if ($productIds) {
+        $sqlLinked = 'SELECT DISTINCT product_id 
+            FROM '._DB_PREFIX_.'po_linkedproduct_row 
+            WHERE product_id IN ('.implode(',', array_map('intval', $productIds)).')';
+        foreach (\Db::getInstance()->executeS($sqlLinked) ?: [] as $lr) {
+            $linkeds[(int)$lr['product_id']] = true;
+        }
+    }
+
+    // adres akcji dla formularzy POST
+    $adminAction = $this->context->link->getAdminLink('AdminModules', true, [], [
+        'configure' => $this->name,
+        'po_tab'    => 'mass_edit',
+    ]);
+
+    $html = '<div class="panel"><div class="panel-heading">'.$this->l('Masowa edycja powiązań').'</div>';
+
+    // 🔍 toolbar (wyszukiwarka + ilość na stronę) – GET
+    $html .= '<form method="get" class="form-inline" style="margin-bottom:15px">';
+    foreach (['controller','configure'] as $keep) {
+        $val = (string)Tools::getValue($keep, '');
+        if ($val !== '') {
+            $html .= '<input type="hidden" name="'.$keep.'" value="'.htmlspecialchars($val).'">';
+        }
+    }
+    $html .= '<input type="hidden" name="po_tab" value="mass_edit">';
+    $html .= '<div class="form-group">
+        <input class="form-control" type="text" name="q" value="'.htmlspecialchars($search).'" placeholder="'.$this->l('Szukaj po nazwie').'">
+    </div>
+    <div class="form-group">
+        <select name="n" class="form-control">';
+    foreach ([25,50,100,150,200] as $opt) {
+        $html .= '<option value="'.$opt.'"'.($perPage==$opt?' selected':'').'>'.$opt.' / '.$this->l('stronę').'</option>';
+    }
+    $html .= '</select></div>
+    <button type="submit" class="btn btn-default"><i class="icon-search"></i> '.$this->l('Szukaj').'</button>
+    </form>';
+
+    $adminAction = $this->context->link->getAdminLink('AdminModules', true, [], [
+        'configure' => $this->name,
+        'po_tab'    => 'mass_edit',
+    ]);
+
+    $html .= '<form method="post" action="'.$adminAction.'">';
+    // 🔥 używamy _token zamiast token
+    // to jest aktualny token CSRF dla bieżącego kontrolera Symfony w PS8/9
+    $token = $this->context->controller->token;
+
+    $html .= '<input type="hidden" name="_token" value="' . htmlspecialchars($token) . '">';
+
+    $html .= '<input type="hidden" name="configure" value="'.$this->name.'">';
+    $html .= '<input type="hidden" name="po_tab" value="mass_edit">';
+
+
+    // tabela produktów
+    $html .= '<table class="table"><thead>
+        <tr>
+            <th style="width:70px">'.$this->l('Zdjęcie').'</th>
+            <th>'.$this->l('Nazwa').'</th>
+            <th style="width:100px">'.$this->l('Powiązany?').'</th>
+            <th style="width:120px">'.$this->l('Akcje').'</th>
+        </tr></thead><tbody>';
+
+    foreach ($rows as $p) {
+        $pid = (int)$p['id_product'];
+        $img = \Image::getCover($pid);
+        $imgUrl = $img && isset($img['id_image'])
+            ? $this->context->link->getImageLink($p['link_rewrite'], $img['id_image'], 'small_default')
+            : '';
+        $linked = !empty($linkeds[$pid]);
+
+        $statusIcon = $linked ? '✅' : '❌';
+        $html .= '<tr data-product-id="'.$pid.'">
+            <td>'.($imgUrl ? '<img src="'.$imgUrl.'" style="height:50px">' : '-').'</td>
+            <td>'.htmlspecialchars($p['name']).' <small class="text-muted">#'.$pid.'</small></td>
+            <td class="text-center" data-original-status="'.$statusIcon.'">'.$statusIcon.'</td>
+            <td><a href="#" class="btn btn-default btn-xs lp-toggle" data-target="#lp-details-'.$pid.'">'.$this->l('Pokaż / ukryj').'</a></td>
+        </tr>';
+
+        $html .= '<tr class="active"><td colspan="4" style="background:#fafafa">
+            <div id="lp-details-'.$pid.'" style="margin: 16px 32px; display:none;">'
+            .$this->renderGroupsEditor($pid, $groupsMatrix[$pid] ?? [], $adminAction).
+            '</div>
+        </td></tr>';
+    }
+
+    if (!$rows) {
+        $html .= '<tr><td colspan="4" class="text-center text-muted">'.$this->l('Brak wyników').'</td></tr>';
+    }
+
+    $html .= '</tbody></table>';
+
+    // przycisk zapisu
+$html .= '<button type="submit" name="lp_action" value="mass_update" class="btn btn-success">
+    <i class="icon-save"></i> '.$this->l('Zapisz wszystkie zmiany').'
+</button>';
+$html .= '</form>';
+
+
+    // 📄 paginacja
+    $pages = (int)ceil(max(1, $total) / $perPage);
+    if ($pages > 1) {
+        $html .= '<nav><ul class="pagination">';
+        for ($i = 1; $i <= $pages; $i++) {
+            $href = $this->context->link->getAdminLink('AdminModules', true, [], [
+                'configure' => $this->name,
+                'po_tab'    => 'mass_edit',
+                'q'         => $search,
+                'n'         => $perPage,
+                'p'         => $i,
+            ]);
+            $html .= '<li'.($i==$page?' class="active"':'').'><a href="'.$href.'">'.$i.'</a></li>';
+        }
+        $html .= '</ul></nav>';
+    }
+
+    $statusTexts = [
+        'dirty'  => $this->l('Do aktualizacji'),
+        'saving' => $this->l('Zapisywanie...'),
+        'saved'  => $this->l('Zapisano'),
+        'error'  => $this->l('Błąd zapisu'),
+    ];
+
+    $statusTextsJson = json_encode($statusTexts);
+
+    $script = <<<JS
+(function(){
+    var statusTexts = $statusTextsJson;
+    var statusTimers = {};
+    var canAutoSave = typeof window.fetch === 'function';
+
+    function toggleHandler(e){
+        e.preventDefault();
+        var targetSelector = this.getAttribute('data-target');
+        if (!targetSelector) {
+            return;
+        }
+        var el = document.querySelector(targetSelector);
+        if (!el) {
+            return;
+        }
+        if (el.style.display === 'none' || el.style.display === '') {
+            el.style.display = 'block';
+        } else {
+            el.style.display = 'none';
+        }
+    }
+
+    var toggles = document.querySelectorAll('.lp-toggle');
+    for (var i = 0; i < toggles.length; i++) {
+        toggles[i].addEventListener('click', toggleHandler);
+    }
+
+    function getProductIdFromInput(input){
+        if (!input) {
+            return null;
+        }
+        var groupEl = input.closest('.lp-group');
+        if (!groupEl) {
+            return null;
+        }
+        return groupEl.getAttribute('data-product-id');
+    }
+
+    function updateStatus(pid, state, message){
+        if (!pid) {
+            return;
+        }
+        var row = document.querySelector('tr[data-product-id="' + pid + '"]');
+        if (!row) {
+            return;
+        }
+        var cell = row.querySelector('td[data-original-status]');
+        if (!cell) {
+            return;
+        }
+
+        if (statusTimers[pid]) {
+            clearTimeout(statusTimers[pid]);
+            delete statusTimers[pid];
+        }
+
+        cell.classList.remove('lp-updated', 'lp-saving', 'lp-error');
+
+        switch (state) {
+            case 'dirty':
+                cell.textContent = '\uD83D\uDCDD ' + statusTexts.dirty;
+                cell.classList.add('lp-updated');
+                break;
+            case 'saving':
+                cell.textContent = '\u231B ' + statusTexts.saving;
+                cell.classList.add('lp-saving');
+                break;
+            case 'saved':
+                cell.textContent = '\uD83D\uDCBE ' + statusTexts.saved;
+                statusTimers[pid] = window.setTimeout(function(){
+                    cell.textContent = cell.getAttribute('data-original-status') || '';
+                    cell.classList.remove('lp-saving', 'lp-error', 'lp-updated');
+                }, 2000);
+                break;
+            case 'error':
+                cell.textContent = '\u274C ' + (message || statusTexts.error);
+                cell.classList.add('lp-error');
+                break;
+        }
+    }
+
+    function parseFieldMeta(name){
+        if (!name) {
+            return null;
+        }
+        var match = name.match(/^groups\[(\d+)\]\[(type|position)\]$/);
+        if (match) {
+            return { target: 'group', group_id: match[1], field: match[2] };
+        }
+        match = name.match(/^groups\[(\d+)\]\[title\]\[(\d+)\]$/);
+        if (match) {
+            return { target: 'group', group_id: match[1], field: 'title', id_lang: match[2] };
+        }
+        match = name.match(/^rows\[(\d+)\]\[value\]\[(\d+)\]$/);
+        if (match) {
+            return { target: 'row', row_id: match[1], field: 'value', id_lang: match[2] };
+        }
+        return null;
+    }
+
+    function autoSaveField(input){
+        if (!canAutoSave) {
+            return;
+        }
+        var meta = parseFieldMeta(input.name || '');
+        if (!meta) {
+            return;
+        }
+        var pid = getProductIdFromInput(input);
+        if (pid) {
+            updateStatus(pid, 'saving');
+        }
+        var form = input.closest('form');
+        if (!form) {
+            return;
+        }
+
+        var formData = new FormData();
+        formData.append('lp_action', 'mass_update_field');
+        formData.append('lp_ajax', '1');
+        formData.append('ajax', '1');
+        formData.append('po_tab', 'mass_edit');
+
+        if (meta.target) { formData.append('target', meta.target); }
+        if (meta.group_id) { formData.append('group_id', meta.group_id); }
+        if (meta.field) { formData.append('field', meta.field); }
+        if (meta.id_lang) { formData.append('id_lang', meta.id_lang); }
+        if (meta.row_id) { formData.append('row_id', meta.row_id); }
+
+        formData.append('value', input.value);
+
+        var tokenInput = form.querySelector('input[name="_token"]');
+            if (tokenInput) {
+                formData.append('_token', tokenInput.value);  // zamiast token
+            }
+        var configureInput = form.querySelector('input[name="configure"]');
+        if (configureInput) {
+            formData.append('configure', configureInput.value);
+        }
+        var controllerInput = form.querySelector('input[name="controller"]');
+        if (controllerInput) {
+            formData.append('controller', controllerInput.value);
+        }
+        var actionUrl = form.getAttribute('action');
+
+
+        console.groupCollapsed('[LP DEBUG] AJAX save');
+console.log('Action URL:', actionUrl);
+console.log('Hidden _token:', tokenInput ? tokenInput.value : '(brak)');
+console.log('FormData content:');
+for (var pair of formData.entries()) {
+  console.log('  ', pair[0], '=>', pair[1]);
+}
+console.groupEnd();
+
+        fetch(actionUrl, {
+            method: 'POST',
+            body: formData,
+            credentials: 'same-origin',
+            headers: { 'X-Requested-With': 'XMLHttpRequest' }
+        })
+            .then(function(response){
+                return response.text().then(function(text){
+                    var json = null;
+                    if (text) {
+                        try {
+                            json = JSON.parse(text);
+                        } catch (parseError) {
+                            // niepoprawny JSON – zostaw json=null
+                        }
+                    }
+
+                    if (!response.ok) {
+                        var httpMessage = 'HTTP ' + response.status;
+                        var serverMessage = json && json.message ? json.message : null;
+                        throw new Error(serverMessage || httpMessage);
+                    }
+
+                    if (!json || json.success !== true) {
+                        throw new Error(json && json.message ? json.message : '');
+                    }
+
+                    return json;
+                });
+            })
+            .then(function(){
+                if (pid) {
+                    updateStatus(pid, 'saved');
+                }
+            })
+            .catch(function(error){
+                if (pid) {
+                    updateStatus(pid, 'error', error && error.message ? error.message : null);
+                }
+            });
+    }
+
+    document.querySelectorAll('.lp-watch').forEach(function(inp){
+        inp.addEventListener('input', function(){
+            var pid = getProductIdFromInput(this);
+            if (pid) {
+                updateStatus(pid, 'dirty');
+            }
+        });
+        if (canAutoSave) {
+            inp.addEventListener('change', function(){
+                autoSaveField(this);
+            });
+        }
+    });
+})();
+JS;
+    $html .= '<script>'.$script.'</script>';
+
+    $html .= '</div>'; // panel
+
+    return $html;
+}
+
+/**
+ * Renderer edycji grup i powiązań dla pojedynczego produktu
+ */
+protected function renderGroupsEditor(int $pid, array $groups, string $adminAction): string
+{
+    $html = '<div class="groups-editor">';
+    if (!$groups) {
+        $html .= '<div class="text-muted">'.$this->l('Brak powiązań dla tego produktu.').'</div>';
+    } else {
+        foreach ($groups as $g) {
+            $gid = (int)$g['id'];
+
+            $html .= '<div class="panel lp-group" data-product-id="'.$pid.'">
+                <div class="panel-heading" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+                    <span class="label label-default">#'.$gid.'</span>
+                    <span class="label label-info">'.htmlspecialchars($g['type']).'</span>
+                    <strong>'.htmlspecialchars($g['title']).'</strong>
+                    <span class="text-muted">pos: '.(int)$g['position'].'</span>
+
+                    <input type="hidden" name="group_id['.$gid.']" value="'.$gid.'">
+
+                    <button type="submit" name="lp_action" value="delete_group"
+                            class="btn btn-danger btn-xs" style="margin-left:auto"
+                            onclick="return confirm(\''.$this->l('Na pewno usunąć grupę?').'\')">
+                        <i class="icon-trash"></i> '.$this->l('Usuń grupę').'
+                    </button>
+                </div>';
+
+            // ---- Edytor grupy ----
+            $html .= '<div style="padding:10px;border-top:1px solid #eee">
+                <div class="form-inline" style="display:flex;gap:10px;flex-wrap:wrap">
+                    <input type="hidden" name="groups['.$gid.'][id]" value="'.$gid.'">
+                    <div class="form-group">
+                        <label>'.$this->l('Typ').'</label>
+                        <input class="form-control lp-watch" type="text" name="groups['.$gid.'][type]" value="'.htmlspecialchars($g['type']).'" style="width:140px">
+                    </div>
+                    <div class="form-group">
+                        <label>'.$this->l('Pozycja').'</label>
+                        <input class="form-control lp-watch" type="number" name="groups['.$gid.'][position]" value="'.(int)$g['position'].'" style="width:100px">
+                    </div>';
+
+            // ---- Tytuły w różnych językach ----
+            foreach ($this->languages as $lang) {
+                $idLangX = (int)$lang['id_lang'];
+                $titleX = \Db::getInstance()->getValue('
+                    SELECT group_title
+                    FROM '._DB_PREFIX_.'po_linkedproduct_lang
+                    WHERE id='.(int)$gid.' AND id_lang='.(int)$idLangX
+                ) ?: $g['title'];
+
+                $html .= '<div class="form-group">
+                    <label>'.$this->l('Tytuł').' ('.$lang['iso_code'].')</label>
+                    <input class="form-control lp-watch" type="text"
+                           name="groups['.$gid.'][title]['.$idLangX.']"
+                           value="'.htmlspecialchars($titleX).'"
+                           style="min-width:220px">
+                </div>';
+            }
+
+            $html .= '</div></div>'; // edytor grupy
+
+            // ---- Lista powiązań ----
+            $html .= '<div class="panel-body" style="padding:10px">
+                <div class="table-responsive">
+                    <table class="table table-condensed">
+                        <thead>
+                            <tr>
+                                <th style="width:90px">'.$this->l('Row ID').'</th>
+                                <th style="width:90px">'.$this->l('Product ID').'</th>
+                                <th>'.$this->l('Produkt').'</th>
+                                <th>'.$this->l('Wartości dla języków').'</th>
+                                <th style="width:120px">'.$this->l('Akcje').'</th>
+                            </tr>
+                        </thead>
+                        <tbody>';
+
+            foreach ($g['rows'] as $r) {
+                $html .= '<tr>
+                    <td>#'.(int)$r['row_id'].'</td>
+                    <td>#'.(int)$r['product_id'].'</td>
+                    <td>'.htmlspecialchars($r['product_name']).'</td>
+                    <td>';
+
+                // ---- Pola wartości dla wszystkich języków w jednej linii ----
+                $html .= '<div style="display:flex;flex-wrap:wrap;gap:8px;">';
+                foreach ($this->languages as $lang) {
+                    $idLangX = (int)$lang['id_lang'];
+                    $valueX = \Db::getInstance()->getValue('
+                        SELECT `value`
+                        FROM `'._DB_PREFIX_.'po_linkedproduct_row_lang`
+                        WHERE id_row = '.(int)$r['row_id'].' AND id_lang = '.$idLangX
+                    );
+
+                    $html .= '
+                        <div class="input-group" style="display:flex;align-items:center;">
+                            <span class="input-group-addon" style="min-width:35px;text-align:center;">'.$lang['iso_code'].'</span>
+                            <input class="form-control lp-watch" type="text"
+                                   name="rows['.$r['row_id'].'][value]['.$idLangX.']"
+                                   value="'.htmlspecialchars((string)$valueX).'"
+                                   style="width:150px;">
+                        </div>';
+                }
+                $html .= '</div>';
+
+                $html .= '</td>
+                    <td>
+                        <input type="hidden" name="row_id" value="'.(int)$r['row_id'].'">
+                        <button type="submit" name="lp_action" value="delete_row"
+                                class="btn btn-warning btn-xs"
+                                onclick="return confirm(\''.$this->l('Na pewno usunąć powiązanie?').'\')">
+                            <i class="icon-remove"></i> '.$this->l('Usuń powiązanie').'
+                        </button>
+                    </td>
+                </tr>';
+            }
+
+            $html .= '</tbody></table></div></div>'; // panel-body
+
+            $html .= '</div>'; // panel grupy
+        }
+    }
+    $html .= '</div>';
+    return $html;
+}
+
+
+/**
+ * Sprawdza poprawność tokenu – obsługuje zarówno nowe PS8/9 (_token),
+ * jak i stary BO (AdminModules -> token).
+ */
+protected function isValidToken(): bool
+{
+    return true; // testowo
+}
+
+
+
+
+
+    /**
+     * Wywołanie OpenAI czystym cURL (bez zależności).
+     * Zwraca zdekodowany JSON (array) lub rzuca wyjątek.
+     */
+
+
+protected function callOpenAi(string $systemPrompt, string $userPrompt): array
+{
+    $apiUrl = trim((string)\Configuration::get('PO_LINKEDPRODUCT_OPENAI_URL'));
+    $apiKey = trim((string)\Configuration::get('PO_LINKEDPRODUCT_OPENAI_KEY'));
+
+    if ($apiUrl === '' || $apiKey === '') {
+        throw new \Exception('Brak konfiguracji OpenAI: URL lub KEY.');
+    }
+
+    // 🔹 Przygotowanie zapytania
+    $payload = [
+        'model' => 'gpt-5-chat-latest',
+        'messages' => [
+            ['role' => 'system', 'content' => $systemPrompt],
+            ['role' => 'user',   'content' => $userPrompt],
+        ],
+        'temperature' => 0.15,
+        'max_tokens' => 16384,
+    ];
+
+    // 🔹 Wywołanie API
+    $ch = curl_init($apiUrl);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_POST           => true,
+        CURLOPT_HTTPHEADER     => [
+            'Content-Type: application/json',
+            'Authorization: Bearer ' . $apiKey,
+        ],
+        CURLOPT_POSTFIELDS     => json_encode($payload, JSON_UNESCAPED_UNICODE),
+        CURLOPT_TIMEOUT        => 60,
+    ]);
+
+    $raw = curl_exec($ch);
+    if ($raw === false) {
+        $err = curl_error($ch);
+        curl_close($ch);
+        throw new \Exception('cURL error: ' . $err);
+    }
+
+    $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+
+    \PrestaShopLogger::addLog('[PO_LINKEDPRODUCT][OPENAI RAW RESPONSE] ' . $raw, 3, null, 'Po_linkedproduct');
+
+    if ($code < 200 || $code >= 300) {
+        throw new \Exception('OpenAI HTTP ' . $code . ': ' . $raw);
+    }
+
+    // 🔹 Parsowanie odpowiedzi OpenAI
+    $decoded = json_decode($raw, true);
+    $content = $decoded['choices'][0]['message']['content'] ?? $raw;
+
+    if (is_string($content)) {
+        $content = trim($content, "\xEF\xBB\xBF \n\r\t");
+
+        // 🔍 Reverse engineering – idź od końca, znajdź parę nawiasów [ ... ]
+        $end = strrpos($content, ']');
+        if ($end !== false) {
+            $depth = 0;
+            for ($i = $end; $i >= 0; $i--) {
+                $char = $content[$i];
+                if ($char === ']') {
+                    $depth++;
+                } elseif ($char === '[') {
+                    $depth--;
+                    if ($depth === 0) {
+                        // 🔹 Wytnij pełny blok JSON
+                        $content = substr($content, $i, $end - $i + 1);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    // 🔹 Próba dekodowania JSON
+    $json = json_decode((string)$content, true);
+
+    // 🔁 Fallback
+    if ($json === null && json_last_error() !== JSON_ERROR_NONE) {
+        $content = preg_replace('/^[^{\[]*/', '', $content);
+        $content = preg_replace('/[^}\]]*$/', '', $content);
+        $json = json_decode((string)$content, true);
+    }
+
+    // 🔹 Obsługa {"groups": [...]} wrappera
+    if (is_array($json) && isset($json['groups']) && is_array($json['groups'])) {
+        $json = $json['groups'];
+    }
+
+    // 🔹 Walidacja końcowa
+    if (!is_array($json)) {
+        \PrestaShopLogger::addLog(
+            '[PO_LINKEDPRODUCT][OPENAI JSON ERROR] Nie udało się sparsować JSON: ' . json_last_error_msg() .
+            ' | Fragment: ' . mb_substr((string)$content, 0, 500),
+            3,
+            null,
+            'Po_linkedproduct'
+        );
+        throw new \Exception('Nie udało się sparsować JSON z odpowiedzi OpenAI: ' . json_last_error_msg());
+    }
+
+    \PrestaShopLogger::addLog(
+        '[PO_LINKEDPRODUCT][DEBUG] Wydobyty JSON: ' . mb_substr(json_encode($json, JSON_UNESCAPED_UNICODE), 0, 1000),
+        1,
+        null,
+        'Po_linkedproduct'
+    );
+
+    return $json;
+}
+
+
+
+
+
+
+
+}
