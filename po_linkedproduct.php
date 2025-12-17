@@ -226,18 +226,9 @@ class Po_linkedproduct extends Module
                 $groups = [];
                 $featureOptions      = $this->getFeatureOptions((int)$this->context->language->id);
                 $suggestedGroups     = $this->normalizeSuggestedGroups(
-                    Tools::getValue('suggested_groups', []),
+                    Tools::getValue('suggested_groups', ''),
                     $featureOptions
                 );
-                $order = array_map('trim', explode(',', $suggestedGroups));
-
-                $priority = [];
-                $pos = 1;
-                foreach ($order as $name) {
-                    if ($name !== '') {
-                        $priority[mb_strtolower($name)] = $pos++;
-                    }
-                }
 
                 $existingGroups = $this->fetchExistingGroups($ids);
 
@@ -277,7 +268,7 @@ class Po_linkedproduct extends Module
                         return $max + 1;
                     };
 
-                    $this->persistGeneratedGroups($groups, $priority, $db, $languages, $defaultLangId, $getNextPosition, $existingGroups);
+                    $this->persistGeneratedGroups($groups, $db, $languages, $defaultLangId, $getNextPosition, $existingGroups);
 
                     $this->_html .= $this->displayConfirmation($this->l('Powiązania zostały wygenerowane i zapisane.'));
                 }
@@ -561,13 +552,12 @@ protected function deleteGroup(int $groupId): void
  * - czyszczenie poprzednich wierszy grupy przy aktualizacji (opcjonalnie)
  *
  * @param array      $groups  – wynik z OpenAI (lista grup)
- * @param array      $priority – mapa priorytetów [lower(title) => position]
  * @param \Db        $db
  * @param array      $languages – Language::getLanguages(false)
  * @param int        $defaultLangId
  * @param callable   $getNextPosition – callable(\Db $db): int   (fallback numeru pozycji)
  */
-protected function persistGeneratedGroups(array $groups, array $priority, \Db $db, array $languages, int $defaultLangId, callable $getNextPosition, array $existingGroups = []): void
+protected function persistGeneratedGroups(array $groups, \Db $db, array $languages, int $defaultLangId, callable $getNextPosition, array $existingGroups = []): void
 {
     if (empty($groups)) {
         throw new \RuntimeException('Brak wygenerowanych grup.');
@@ -609,19 +599,9 @@ protected function persistGeneratedGroups(array $groups, array $priority, \Db $d
                 }
             }
 
-            // 🔹 PRIORYTET POZYCJI — JSON → priorytet → auto
             $jsonPos  = (int)($group['position'] ?? 0);
 
-            $titleForPriority = mb_strtolower($titleByLang[$defaultLangId] ?? '');
-            $prioPos = $priority[$titleForPriority] ?? 0;
-
-            if ($jsonPos > 0) {
-                $groupPosition = $jsonPos;
-            } elseif ($prioPos > 0) {
-                $groupPosition = (int)$prioPos;
-            } else {
-                $groupPosition = (int)$getNextPosition();
-            }
+            $groupPosition = $jsonPos > 0 ? $jsonPos : (int)$getNextPosition();
 
             // 🔹 Sprawdzenie ID (czy aktualizacja czy nowa grupa)
             $incomingGroupId = (int)($group['linked_id'] ?? $group['id'] ?? 0);
@@ -1173,6 +1153,11 @@ protected function normalizeSuggestedGroups($rawValue, array $featureOptions): s
         return implode(', ', array_values(array_unique($names)));
     }
 
+    $singleId = (int)$rawValue;
+    if ($singleId > 0 && isset($featureOptions[$singleId])) {
+        return $featureOptions[$singleId];
+    }
+
     return trim((string)$rawValue);
 }
 
@@ -1289,9 +1274,9 @@ protected function getSystemPrompt(string $suggestedGroups = ''): string
 
 2. Nazwę grupy podajesz tylko w jednym miejscu poprzez znacznik: {{GROUP_TITLE}}.
 - Wszędzie dalej w prompcie systemowym i w danych wyjściowych odnoszą się automatycznie do wartości tego znacznika.
-- {{GROUP_TITLE}} powinna być automatycznie poddana ekstrakcji – wyodrębnij z niej prawidłową nazwę grupy (parametru), prawidłowe wartości (jeśli są podane) oraz prawidłową pozycję (jeśli jest podana).
+- {{GROUP_TITLE}} powinna być automatycznie poddana ekstrakcji – wyodrębnij z niej prawidłową nazwę grupy (parametru) oraz prawidłowe wartości (jeśli są podane).
 - ZAWSZE obsłuż placeholder {{GROUP_TITLE}} zgodnie z szablonem JSON poniżej, nigdy go nie ignoruj.
-- {{GROUP_TITLE}} może mieć również strukturę: sugerowana nazwa grupy, sugerowane wartości, sugerowana pozycja grupy, np.: Mocowanie Air Tag (Tak/Nie): pozycja 90. Wyodrębnij z tego oddzielnie: nazwę grupy = „Mocowanie Air Tag”, wartości = [„Tak”, „Nie”], pozycja = 90.
+- {{GROUP_TITLE}} może mieć również strukturę: sugerowana nazwa grupy oraz sugerowane wartości (np. Mocowanie Air Tag (Tak/Nie)) – wyodrębnij z tego nazwę grupy = „Mocowanie Air Tag” i wartości = [„Tak”, „Nie”].
 
 3. Zasady ogólne:
 - Analizuj wszystkie podane produkty.
@@ -1330,7 +1315,7 @@ protected function getSystemPrompt(string $suggestedGroups = ''): string
 
 11. Każdy parametr musi tworzyć osobną grupę.
 
-12. Pole "group_title" ("title") musi jednoznacznie wskazywać nazwę parametru, tutaj: {{GROUP_TITLE}}, gdzie {{GROUP_TITLE}} powinien zostać automatycznie rozbity na: nazwę parametru, wartości oraz pozycję (jeśli są zawarte w tej strukturze). ZAWSZE wyodrębniaj te elementy i przypisuj do odpowiednich pól – nigdy nie pomijaj ekstrakcji!
+12. Pole "group_title" ("title") musi jednoznacznie wskazywać nazwę parametru, tutaj: {{GROUP_TITLE}}, gdzie {{GROUP_TITLE}} powinien zostać automatycznie rozbity na: nazwę parametru oraz wartości (jeśli są zawarte w tej strukturze). ZAWSZE wyodrębniaj te elementy i przypisuj do odpowiednich pól – nigdy nie pomijaj ekstrakcji!
 
 13. Pole "values" musi zawierać krótkie i jednoznaczne wartości dla każdego produktu (np. "S", "M", "L"). Jeżeli są podane wartości w {{GROUP_TITLE}}, używaj ich jako preferowanych etykiet.
 
@@ -1350,28 +1335,22 @@ protected function getSystemPrompt(string $suggestedGroups = ''): string
 19. Jeżeli istnieją już grupy wariantów w sekcji „Istniejące grupy wariantów”, nie powtarzaj ich – generuj tylko brakujące. 
     Jeśli znajdziesz pasującą nazwę parametru, ustaw w JSON pole "linked_id" z id podanym w sekcji istniejących grup i aktualizuj tę grupę zamiast tworzyć nową
 
-20. Jeśli użytkownik podał „Sugerowane grupy do wygenerowania”, potraktuj je priorytetowo.
+20. Jeśli użytkownik podał „Sugerowane grupy do wygenerowania”, potraktuj je priorytetowo, ale nie ustawiaj dodatkowych priorytetów ani pozycji – kolejność nie ma znaczenia.
 
 21. Jeśli użytkownik poda listę sugerowanych nazw grup (np. {{GROUP_TITLE}}):
 - Traktuj je jako kanoniczne nazwy parametrów.
 - Usuń przykładowe dopiski w nawiasach.
 - Ostateczna nazwa "title" musi dokładnie odpowiadać czystemu nazewnictwu parametru.
-- Dla rozszerzonych struktur tytułu (np. Mocowanie Air Tag (Tak/Nie): pozycja 90), obsłuż wszystkie te elementy zgodnie z podanym formatem, czyli rozbij na składowe zgodnie ze strukturą: nazwa, wartości, pozycja.
+- Dla rozszerzonych struktur tytułu (np. Mocowanie Air Tag (Tak/Nie)) obsłuż te elementy zgodnie z podanym formatem, czyli rozbij na składowe: nazwa i wartości.
 
 22. Jeśli użytkownik poda sugerowane wartości wariantów (np. {{GROUP_TITLE}}: S, M, L):
 - Użyj tych wartości jako preferowanych etykiet.
 - Jeśli produkt pasuje do którejś z sugerowanych wartości, użyj tej etykiety dokładnie tak.
 - Jeśli w produktach są dodatkowe wartości spoza sugestii – uwzględnij je również.
 
-23. Kolejność grup powinna odpowiadać preferencjom użytkownika:
-- Lista preferencji: {{GROUP_TITLE}} (pozycja: 1) lub inna zgodnie z rozszerzonym formatem, np. pozycja 90.
-- Każda nowa grupa musi mieć pole position zgodne z tą kolejnością (jeśli podana jest jako część {{GROUP_TITLE}} – obsłuż to, wyodrębnij pozycję i ustaw na jej wartość).
-- Nazwy grup w "title" muszą być identyczne z tymi z listy (bez nawiasów i przykładów, oprócz przypadków gdy sugerowana struktura zawiera takie elementy).
-
-24. Format JSON:
+23. Format JSON:
 [ { "type": "text", "position": 1, "title": { "1": "{{GROUP_TITLE}}" }, "products": [<product_id>, ...], "values": { "<product_id>": { "1": "<string>" } } } ]
 - Jeśli grupa odpowiada istniejącej pozycji z listy, dodaj pole linked_id z jej id (wtedy grupa ma być zaktualizowana).
-- Obsłuż także pole position zgodnie z podanym (np. pozycja 90).
 
 25. Przed wygenerowaniem JSON ZAWSZE wygeneruj checklistę kroków koncepcyjnych (7 punktów):
 1. Ekstrakcja sugerowanej grupy
@@ -1382,14 +1361,14 @@ protected function getSystemPrompt(string $suggestedGroups = ''): string
 6. Sprawdzenie, czy nie powielamy istniejacych grup
 7. Walidacja: każda grupa zawiera produkt bazowy, różni się tylko jednym parametrem, nie ma duplikatów
 
-26. WALIDACJA: Po każdym istotnym etapie wstaw wyraźny krok kontrolny – krótko zweryfikuj, czy uzyskany efekt spełnia kryteria zadania (czy wybrano produkt bazowy, poprawnie rozbito {{GROUP_TITLE}}, nie wygenerowano par zamiast grup, brak duplikatów, czy uwzględniono wszystkie produkty, poprawne wyodrębnienie pozycji). Jeżeli brakuje którejkolwiek wymaganej grupy lub wartość jest niejednoznaczna, pomiń dany produkt bez raportowania błędu i przejdź do kolejnego kroku. Sprawdź, czy wszystkie produkty w danej grupie różnią się od siebie tylko jednym parametrem (tym samym).
+26. WALIDACJA: Po każdym istotnym etapie wstaw wyraźny krok kontrolny – krótko zweryfikuj, czy uzyskany efekt spełnia kryteria zadania (czy wybrano produkt bazowy, poprawnie rozbito {{GROUP_TITLE}}, nie wygenerowano par zamiast grup, brak duplikatów, czy uwzględniono wszystkie produkty). Jeżeli brakuje którejkolwiek wymaganej grupy lub wartość jest niejednoznaczna, pomiń dany produkt bez raportowania błędu i przejdź do kolejnego kroku. Sprawdź, czy wszystkie produkty w danej grupie różnią się od siebie tylko jednym parametrem (tym samym).
 Jeśli jakikolwiek produkt w grupie ma inne różnice (np. inny rozmiar), rozbij grupę na mniejsze, aż warunek będzie spełniony.
 Jeśli po rozbiciu grupa ma tylko 1 produkt, pomiń ją. 
 
 ### Szczegółowe wytyczne dla tego zadania:
-- Wygeneruj wszystkie grupy obejmujące produkty, które różnią się tylko jednym (tym samym) parametrem. Nie bierz pod uwagę więcej niż jednego parametru w pojedynczym grupowaniu. Przygotuj kolumny z uwzględnieniem wyodrębnionych: nazwy grupy, wartości oraz pozycji z {{GROUP_TITLE}}.
+- Wygeneruj wszystkie grupy obejmujące produkty, które różnią się tylko jednym (tym samym) parametrem. Nie bierz pod uwagę więcej niż jednego parametru w pojedynczym grupowaniu. Przygotuj kolumny z uwzględnieniem wyodrębnionych: nazwy grupy i wartości z {{GROUP_TITLE}}.
 - Użyj dokładnie tej nazwy jako "group_title" w tym formacie po ekstrakcji.
-- Przypisz "position": zgodnie z wyodrębnioną wartością lub domyślnie 1, jeśli nie podano inaczej.
+- Pole "position" może pozostać domyślne (1) lub pochodzić z danych wejściowych, jeśli jest jednoznacznie podane. Nie stosuj dodatkowych priorytetów.
 - Nie twórz żadnych innych grup niż te odpowiadające produktom różniącym się tylko jednym wybranym parametrem.
 
 ### Format wyjściowy
@@ -1436,13 +1415,11 @@ protected function renderGenerator(): string
     $offset  = ($page - 1) * $perPage;
     $idLang  = (int)$this->context->language->id;
     $featureOptions = $this->getFeatureOptions($idLang);
-    $selectedFeatures = Tools::getValue('suggested_groups', []);
-    if (!is_array($selectedFeatures)) {
-        $selectedFeatures = $selectedFeatures !== ''
-            ? array_filter(array_map('intval', explode(',', (string)$selectedFeatures)))
-            : [];
+    $selectedFeature = Tools::getValue('suggested_groups', '');
+    if (is_array($selectedFeature)) {
+        $selectedFeature = reset($selectedFeature) !== false ? (int)reset($selectedFeature) : '';
     } else {
-        $selectedFeatures = array_values(array_unique(array_map('intval', $selectedFeatures)));
+        $selectedFeature = (int)$selectedFeature;
     }
 
     $availableModels = [
@@ -1537,12 +1514,12 @@ protected function renderGenerator(): string
     $html .= '<div class="form-group">
         <label>'.$this->l('Sugerowane grupy do wygenerowania').'</label>';
     if (!empty($featureOptions)) {
-        $html .= '<select name="suggested_groups[]" class="form-control" multiple size="8">';
+        $html .= '<select name="suggested_groups" class="form-control">';
+        $html .= '<option value="">'.$this->l('Wybierz cechę').'</option>';
         foreach ($featureOptions as $featureId => $featureName) {
-            $html .= '<option value="'.$featureId.'"'.(in_array((int)$featureId, $selectedFeatures, true) ? ' selected' : '').'>'.htmlspecialchars($featureName).'</option>';
+            $html .= '<option value="'.$featureId.'"'.((int)$featureId === (int)$selectedFeature ? ' selected' : '').'>'.htmlspecialchars($featureName).'</option>';
         }
-        $html .= '</select>
-        <p class="help-block">'.$this->l('Wybierz cechy, które chcesz wykorzystać jako nazwy grup.').'</p>';
+        $html .= '</select>';
     } else {
         $html .= '<p class="text-muted" style="margin:0">'.$this->l('Brak cech do wyświetlenia.').'</p>';
     }
