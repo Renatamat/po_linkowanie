@@ -35,6 +35,7 @@ class Po_linkedproduct extends Module
         Configuration::updateValue('PO_LINKEDPRODUCT_LIVE_MODE', false);
         Configuration::updateValue('PO_LINKEDPRODUCT_OPENAI_URL', '');
         Configuration::updateValue('PO_LINKEDPRODUCT_OPENAI_KEY', '');
+        Configuration::updateValue('PO_LINKEDPRODUCT_OPENAI_MODEL', 'gpt-5-chat-latest');
 
         include(dirname(__FILE__).'/sql/install.php');
 
@@ -52,6 +53,7 @@ class Po_linkedproduct extends Module
         Configuration::deleteByName('PO_LINKEDPRODUCT_LIVE_MODE');
         Configuration::deleteByName('PO_LINKEDPRODUCT_OPENAI_URL');
         Configuration::deleteByName('PO_LINKEDPRODUCT_OPENAI_KEY');
+        Configuration::deleteByName('PO_LINKEDPRODUCT_OPENAI_MODEL');
 
         include(dirname(__FILE__).'/sql/uninstall.php');
 
@@ -455,10 +457,12 @@ protected function renderSettingsForm(): string
         $live = (bool) Tools::getValue('PO_LINKEDPRODUCT_LIVE_MODE');
         $url  = (string) Tools::getValue('PO_LINKEDPRODUCT_OPENAI_URL');
         $key  = (string) Tools::getValue('PO_LINKEDPRODUCT_OPENAI_KEY');
+        $model = (string) Tools::getValue('PO_LINKEDPRODUCT_OPENAI_MODEL', 'gpt-5-chat-latest');
 
         Configuration::updateValue('PO_LINKEDPRODUCT_LIVE_MODE', $live);
         Configuration::updateValue('PO_LINKEDPRODUCT_OPENAI_URL', $url);
         Configuration::updateValue('PO_LINKEDPRODUCT_OPENAI_KEY', $key);
+        Configuration::updateValue('PO_LINKEDPRODUCT_OPENAI_MODEL', $model);
 
         $output .= $this->displayConfirmation($this->l('Settings updated'));
     }
@@ -466,6 +470,19 @@ protected function renderSettingsForm(): string
     $liveVal = (bool) Configuration::get('PO_LINKEDPRODUCT_LIVE_MODE');
     $urlVal  = (string) Configuration::get('PO_LINKEDPRODUCT_OPENAI_URL');
     $keyVal  = (string) Configuration::get('PO_LINKEDPRODUCT_OPENAI_KEY');
+    $modelVal = (string) Configuration::get('PO_LINKEDPRODUCT_OPENAI_MODEL') ?: 'gpt-5-chat-latest';
+
+    $availableModels = [
+        'gpt-5-chat-latest' => 'gpt-5-chat-latest',
+        'gpt-4o' => 'gpt-4o',
+        'gpt-4o-mini' => 'gpt-4o-mini',
+        'o3-mini' => 'o3-mini',
+    ];
+
+    $modelOptions = '';
+    foreach ($availableModels as $modelKey => $modelLabel) {
+        $modelOptions .= '<option value="'.htmlspecialchars($modelKey).'"'.($modelKey === $modelVal ? ' selected' : '').'>'.htmlspecialchars($modelLabel).'</option>';
+    }
 
     $output .= '
     <form method="post" class="defaultForm form-horizontal">
@@ -488,6 +505,15 @@ protected function renderSettingsForm(): string
                 <label class="control-label col-lg-3">'.$this->l('OpenAI Base URL').'</label>
                 <div class="col-lg-9">
                     <input type="text" name="PO_LINKEDPRODUCT_OPENAI_URL" value="'.htmlspecialchars($urlVal).'" class="form-control" placeholder="https://api.openai.com/v1/chat/completions" />
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label class="control-label col-lg-3">'.$this->l('Model').'</label>
+                <div class="col-lg-9">
+                    <select name="PO_LINKEDPRODUCT_OPENAI_MODEL" class="form-control">
+                        '.$modelOptions.'
+                    </select>
                 </div>
             </div>
 
@@ -2112,6 +2138,7 @@ protected function callOpenAi(string $systemPrompt, string $userPrompt): array
 {
     $apiUrl = trim((string)\Configuration::get('PO_LINKEDPRODUCT_OPENAI_URL'));
     $apiKey = trim((string)\Configuration::get('PO_LINKEDPRODUCT_OPENAI_KEY'));
+    $model = (string) (\Configuration::get('PO_LINKEDPRODUCT_OPENAI_MODEL') ?: 'gpt-5-chat-latest');
 
     if ($apiUrl === '' || $apiKey === '') {
         throw new \Exception('Brak konfiguracji OpenAI: URL lub KEY.');
@@ -2119,7 +2146,7 @@ protected function callOpenAi(string $systemPrompt, string $userPrompt): array
 
     // 🔹 Przygotowanie zapytania
     $payload = [
-        'model' => 'gpt-5-chat-latest',
+        'model' => $model ?: 'gpt-5-chat-latest',
         'messages' => [
             ['role' => 'system', 'content' => $systemPrompt],
             ['role' => 'user',   'content' => $userPrompt],
