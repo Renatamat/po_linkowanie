@@ -229,12 +229,16 @@ class Po_linkedproduct extends Module
                     Tools::getValue('suggested_groups', ''),
                     $featureOptions
                 );
+                $generationGroupType = (string) Tools::getValue('generation_group_type', 'text');
+                if (!in_array($generationGroupType, ['text', 'photo'], true)) {
+                    $generationGroupType = 'text';
+                }
 
                 $existingGroups = $this->fetchExistingGroups($ids);
 
                 foreach ($chunks as $chunk) {
                     $names  = $this->fetchProductsData($chunk);
-                    $prompt = $this->buildUserPrompt($names, $existingGroups, $suggestedGroups);
+                    $prompt = $this->buildUserPrompt($names, $existingGroups, $suggestedGroups, $generationGroupType);
 
                     \PrestaShopLogger::addLog(
                         '[PO_LINKEDPRODUCT][DEBUG] USER PROMPT: ' . Tools::substr($prompt, 0, 50000),
@@ -268,7 +272,7 @@ class Po_linkedproduct extends Module
                         return $max + 1;
                     };
 
-                    $this->persistGeneratedGroups($groups, $db, $languages, $defaultLangId, $getNextPosition, $existingGroups);
+                    $this->persistGeneratedGroups($groups, $db, $languages, $defaultLangId, $getNextPosition, $existingGroups, $generationGroupType);
 
                     $this->_html .= $this->displayConfirmation($this->l('Powiązania zostały wygenerowane i zapisane.'));
                 }
@@ -556,8 +560,9 @@ protected function deleteGroup(int $groupId): void
  * @param array      $languages – Language::getLanguages(false)
  * @param int        $defaultLangId
  * @param callable   $getNextPosition – callable(\Db $db): int   (fallback numeru pozycji)
+ * @param string     $defaultGroupType – fallback typu generowanej grupy (text/photo)
  */
-protected function persistGeneratedGroups(array $groups, \Db $db, array $languages, int $defaultLangId, callable $getNextPosition, array $existingGroups = []): void
+protected function persistGeneratedGroups(array $groups, \Db $db, array $languages, int $defaultLangId, callable $getNextPosition, array $existingGroups = [], string $defaultGroupType = 'text'): void
 {
     if (empty($groups)) {
         throw new \RuntimeException('Brak wygenerowanych grup.');
@@ -588,7 +593,7 @@ protected function persistGeneratedGroups(array $groups, \Db $db, array $languag
                 continue;
             }
 
-            $type        = pSQL((string)($group['type'] ?? 'text'));
+            $type        = pSQL((string)($group['type'] ?? $defaultGroupType ?? 'text'));
             $titleByLang = is_array($group['title'] ?? null) ? $group['title'] : [];
 
             // 🔹 Fallback brakujących tłumaczeń
@@ -1167,7 +1172,8 @@ protected function normalizeSuggestedGroups($rawValue, array $featureOptions): s
 protected function buildUserPrompt(
     array $names,
     array $existingGroups = [],
-    string $suggestedGroups = ''
+    string $suggestedGroups = '',
+    string $generationGroupType = 'text'
 ): string
 
 
@@ -1183,6 +1189,11 @@ $prompt = '';
 if ($suggestedGroups !== '') {
     $prompt .= "\n\nSugerowane grupy do wygenerowania (od użytkownika):\n"
              .$suggestedGroups;
+}
+
+// preferowany typ grupy
+if ($generationGroupType !== '') {
+    $prompt .= "\n\nPreferowany typ generowanych grup: ".$generationGroupType;
 }
 
 // lista produktów
@@ -1421,6 +1432,10 @@ protected function renderGenerator(): string
     } else {
         $selectedFeature = (int)$selectedFeature;
     }
+    $generationGroupType = (string) Tools::getValue('generation_group_type', 'text');
+    if (!in_array($generationGroupType, ['text', 'photo'], true)) {
+        $generationGroupType = 'text';
+    }
 
     $availableModels = [
         'gpt-5-chat-latest' => 'gpt-5-chat-latest',
@@ -1509,6 +1524,13 @@ protected function renderGenerator(): string
         <label>'.$this->l('Model').'</label>
         <select name="PO_LINKEDPRODUCT_OPENAI_MODEL" class="form-control">
             '.$modelOptions.'
+        </select>
+    </div>';
+    $html .= '<div class="form-group">
+        <label>'.$this->l('Typ generowanej grupy').'</label>
+        <select name="generation_group_type" class="form-control">
+            <option value="text"'.($generationGroupType === 'text' ? ' selected' : '').'>'.$this->l('Tekst').'</option>
+            <option value="photo"'.($generationGroupType === 'photo' ? ' selected' : '').'>'.$this->l('Zdjęcie').'</option>
         </select>
     </div>';
     $html .= '<div class="form-group">
