@@ -202,6 +202,11 @@ class Po_linkedproduct extends Module
             } else {
                 $ids = array_map('intval', $selected);
 
+                $selectedModel = (string) Tools::getValue('PO_LINKEDPRODUCT_OPENAI_MODEL', '');
+                if ($selectedModel !== '') {
+                    \Configuration::updateValue('PO_LINKEDPRODUCT_OPENAI_MODEL', $selectedModel);
+                }
+
                 $names = \Db::getInstance()->executeS('
                     SELECT p.id_product, pl.name, pl.link_rewrite
                     FROM '._DB_PREFIX_.'product p
@@ -219,8 +224,11 @@ class Po_linkedproduct extends Module
 
                 $chunks = array_chunk($ids, 500);
                 $groups = [];
-                $suggestedGroups     = (string) Tools::getValue('suggested_groups', '');
-                $suggestedPriorities = (string) Tools::getValue('suggested_priorities', '');
+                $featureOptions      = $this->getFeatureOptions((int)$this->context->language->id);
+                $suggestedGroups     = $this->normalizeSuggestedGroups(
+                    Tools::getValue('suggested_groups', []),
+                    $featureOptions
+                );
                 $order = array_map('trim', explode(',', $suggestedGroups));
 
                 $priority = [];
@@ -235,7 +243,7 @@ class Po_linkedproduct extends Module
 
                 foreach ($chunks as $chunk) {
                     $names  = $this->fetchProductsData($chunk);
-                    $prompt = $this->buildUserPrompt($names, $existingGroups, $suggestedGroups, $suggestedPriorities);
+                    $prompt = $this->buildUserPrompt($names, $existingGroups, $suggestedGroups);
 
                     \PrestaShopLogger::addLog(
                         '[PO_LINKEDPRODUCT][DEBUG] USER PROMPT: ' . Tools::substr($prompt, 0, 50000),
@@ -457,12 +465,10 @@ protected function renderSettingsForm(): string
         $live = (bool) Tools::getValue('PO_LINKEDPRODUCT_LIVE_MODE');
         $url  = (string) Tools::getValue('PO_LINKEDPRODUCT_OPENAI_URL');
         $key  = (string) Tools::getValue('PO_LINKEDPRODUCT_OPENAI_KEY');
-        $model = (string) Tools::getValue('PO_LINKEDPRODUCT_OPENAI_MODEL', 'gpt-5-chat-latest');
 
         Configuration::updateValue('PO_LINKEDPRODUCT_LIVE_MODE', $live);
         Configuration::updateValue('PO_LINKEDPRODUCT_OPENAI_URL', $url);
         Configuration::updateValue('PO_LINKEDPRODUCT_OPENAI_KEY', $key);
-        Configuration::updateValue('PO_LINKEDPRODUCT_OPENAI_MODEL', $model);
 
         $output .= $this->displayConfirmation($this->l('Settings updated'));
     }
@@ -470,19 +476,6 @@ protected function renderSettingsForm(): string
     $liveVal = (bool) Configuration::get('PO_LINKEDPRODUCT_LIVE_MODE');
     $urlVal  = (string) Configuration::get('PO_LINKEDPRODUCT_OPENAI_URL');
     $keyVal  = (string) Configuration::get('PO_LINKEDPRODUCT_OPENAI_KEY');
-    $modelVal = (string) Configuration::get('PO_LINKEDPRODUCT_OPENAI_MODEL') ?: 'gpt-5-chat-latest';
-
-    $availableModels = [
-        'gpt-5-chat-latest' => 'gpt-5-chat-latest',
-        'gpt-4o' => 'gpt-4o',
-        'gpt-4o-mini' => 'gpt-4o-mini',
-        'o3-mini' => 'o3-mini',
-    ];
-
-    $modelOptions = '';
-    foreach ($availableModels as $modelKey => $modelLabel) {
-        $modelOptions .= '<option value="'.htmlspecialchars($modelKey).'"'.($modelKey === $modelVal ? ' selected' : '').'>'.htmlspecialchars($modelLabel).'</option>';
-    }
 
     $output .= '
     <form method="post" class="defaultForm form-horizontal">
@@ -505,15 +498,6 @@ protected function renderSettingsForm(): string
                 <label class="control-label col-lg-3">'.$this->l('OpenAI Base URL').'</label>
                 <div class="col-lg-9">
                     <input type="text" name="PO_LINKEDPRODUCT_OPENAI_URL" value="'.htmlspecialchars($urlVal).'" class="form-control" placeholder="https://api.openai.com/v1/chat/completions" />
-                </div>
-            </div>
-
-            <div class="form-group">
-                <label class="control-label col-lg-3">'.$this->l('Model').'</label>
-                <div class="col-lg-9">
-                    <select name="PO_LINKEDPRODUCT_OPENAI_MODEL" class="form-control">
-                        '.$modelOptions.'
-                    </select>
                 </div>
             </div>
 
@@ -1155,13 +1139,50 @@ protected function fetchProductsData(array $ids): array
 }
 
 /**
+ * Zwraca listę cech (feature) w formacie [id => name] dla danego języka.
+ */
+protected function getFeatureOptions(int $idLang): array
+{
+    $options = [];
+    foreach (\Feature::getFeatures($idLang) as $feature) {
+        $id   = (int)($feature['id_feature'] ?? 0);
+        $name = (string)($feature['name'] ?? '');
+        if ($id > 0 && $name !== '') {
+            $options[$id] = $name;
+        }
+    }
+
+    return $options;
+}
+
+/**
+ * Normalizuje sugerowane grupy do postaci listy nazw oddzielonych przecinkiem.
+ * Obsługuje wartości z formularza (tablica ID cech) oraz surowe stringi.
+ */
+protected function normalizeSuggestedGroups($rawValue, array $featureOptions): string
+{
+    if (is_array($rawValue)) {
+        $names = [];
+        foreach ($rawValue as $featureId) {
+            $id = (int)$featureId;
+            if (isset($featureOptions[$id])) {
+                $names[] = $featureOptions[$id];
+            }
+        }
+
+        return implode(', ', array_values(array_unique($names)));
+    }
+
+    return trim((string)$rawValue);
+}
+
+/**
  * Buduje prompt użytkownika na podstawie danych produktów
  */
 protected function buildUserPrompt(
     array $names,
     array $existingGroups = [],
-    string $suggestedGroups = '',
-    string $suggestedPriorities = ''
+    string $suggestedGroups = ''
 ): string
 
 
@@ -1179,13 +1200,6 @@ if ($suggestedGroups !== '') {
              .$suggestedGroups;
 }
 
-// sugerowane priorytety – niezależnie
-if (!empty($suggestedPriorities)) {
-    $prompt .= "\n\nPriorytety dla grup (od użytkownika, wartości od 10 do 90):\n"
-     .$suggestedPriorities;
-       
-}
-
 // lista produktów
 $prompt .= "\n\nProdukty do powiązania:\n".implode("\n", $lines);
 
@@ -1200,8 +1214,7 @@ if (!empty($existingGroups)) {
 $prompt .= "\n\n⚠️ IMPORTANT:\n"
          ."1. Generate ONLY these groups and their missing variants.\n"
          ."2. Use exactly these names as `group_title`.\n"
-         ."3. Assign `position` field according to suggested priority if provided.\n"
-         ."4. Do not invent additional groups outside this list.\n";
+         ."3. Do not invent additional groups outside this list.\n";
 
 
     return $prompt;
@@ -1422,6 +1435,28 @@ protected function renderGenerator(): string
     $search  = trim((string)Tools::getValue('q', ''));
     $offset  = ($page - 1) * $perPage;
     $idLang  = (int)$this->context->language->id;
+    $featureOptions = $this->getFeatureOptions($idLang);
+    $selectedFeatures = Tools::getValue('suggested_groups', []);
+    if (!is_array($selectedFeatures)) {
+        $selectedFeatures = $selectedFeatures !== ''
+            ? array_filter(array_map('intval', explode(',', (string)$selectedFeatures)))
+            : [];
+    } else {
+        $selectedFeatures = array_values(array_unique(array_map('intval', $selectedFeatures)));
+    }
+
+    $availableModels = [
+        'gpt-5-chat-latest' => 'gpt-5-chat-latest',
+        'gpt-4o' => 'gpt-4o',
+        'gpt-4o-mini' => 'gpt-4o-mini',
+        'o3-mini' => 'o3-mini',
+    ];
+    $modelVal = (string) \Configuration::get('PO_LINKEDPRODUCT_OPENAI_MODEL') ?: 'gpt-5-chat-latest';
+    $modelVal = (string) Tools::getValue('PO_LINKEDPRODUCT_OPENAI_MODEL', $modelVal);
+    $modelOptions = '';
+    foreach ($availableModels as $modelKey => $modelLabel) {
+        $modelOptions .= '<option value="'.htmlspecialchars($modelKey).'"'.($modelKey === $modelVal ? ' selected' : '').'>'.htmlspecialchars($modelLabel).'</option>';
+    }
 
     $where = $search !== '' ? ' AND pl.name LIKE "%'.pSQL($search).'%" ' : '';
 
@@ -1494,12 +1529,24 @@ protected function renderGenerator(): string
         </div>
     </div>';
     $html .= '<div class="form-group">
-        <label>'.$this->l('Sugerowane grupy do wygenerowania').'</label>
-        <textarea name="suggested_groups" class="form-control" rows="5">'.htmlspecialchars((string)Tools::getValue('suggested_groups','')).'</textarea>
+        <label>'.$this->l('Model').'</label>
+        <select name="PO_LINKEDPRODUCT_OPENAI_MODEL" class="form-control">
+            '.$modelOptions.'
+        </select>
     </div>';
     $html .= '<div class="form-group">
-        <label>'.$this->l('Priorytety grup (10–90)').'</label>
-        <textarea name="suggested_priorities" class="form-control" rows="3">'.htmlspecialchars((string)Tools::getValue('suggested_priorities','')).'</textarea>
+        <label>'.$this->l('Sugerowane grupy do wygenerowania').'</label>';
+    if (!empty($featureOptions)) {
+        $html .= '<select name="suggested_groups[]" class="form-control" multiple size="8">';
+        foreach ($featureOptions as $featureId => $featureName) {
+            $html .= '<option value="'.$featureId.'"'.(in_array((int)$featureId, $selectedFeatures, true) ? ' selected' : '').'>'.htmlspecialchars($featureName).'</option>';
+        }
+        $html .= '</select>
+        <p class="help-block">'.$this->l('Wybierz cechy, które chcesz wykorzystać jako nazwy grup.').'</p>';
+    } else {
+        $html .= '<p class="text-muted" style="margin:0">'.$this->l('Brak cech do wyświetlenia.').'</p>';
+    }
+    $html .= '
     </div>';
 
     // tabela produktów
