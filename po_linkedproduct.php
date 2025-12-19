@@ -1223,12 +1223,22 @@ protected function fetchExistingGroups(array $ids): array
     }
 
     $db = \Db::getInstance();
+    $groupIdSql = 'SELECT DISTINCT g.id
+            FROM '._DB_PREFIX_.'po_linkedproduct g
+            INNER JOIN '._DB_PREFIX_.'po_linkedproduct_row r ON (r.group_id=g.id)
+            WHERE r.product_id IN ('.implode(',', array_map('intval', $ids)).')';
+
+    $groupIds = array_map('intval', array_column($db->executeS($groupIdSql) ?: [], 'id'));
+
+    if (empty($groupIds)) {
+        return [];
+    }
     $sql = 'SELECT g.id, g.type, gl.group_title, r.product_id, rl.value, gl.id_lang
             FROM '._DB_PREFIX_.'po_linkedproduct g
             INNER JOIN '._DB_PREFIX_.'po_linkedproduct_lang gl ON (gl.id=g.id)
             INNER JOIN '._DB_PREFIX_.'po_linkedproduct_row r ON (r.group_id=g.id)
             LEFT JOIN '._DB_PREFIX_.'po_linkedproduct_row_lang rl ON (rl.id_row=r.id)
-            WHERE r.product_id IN ('.implode(',', array_map('intval',$ids)).')';
+            WHERE g.id IN ('.implode(',', $groupIds).')';
 
     $rows = $db->executeS($sql);
 
@@ -1523,10 +1533,10 @@ protected function renderGenerator(): string
     </div>';
 
     $html .= '<div class="form-group">
-        <label>'.$this->l('Sugerowane grupy do wygenerowania').'</label>';
+        <label>'.$this->l('Sugerowane grupy do wygenerowania (wybierz cechę)').'</label>';
     if (!empty($featureOptions)) {
-        $html .= '<select name="suggested_groups" class="form-control">';
-        $html .= '<option value="">'.$this->l('Wybierz cechę').'</option>';
+        $html .= '<select name="suggested_groups" class="form-control" id="lp-suggested-groups" required>';
+        $html .= '<option value="">'.$this->l(' ---- ').'</option>';
         foreach ($featureOptions as $featureId => $featureName) {
             $html .= '<option value="'.$featureId.'"'.((int)$featureId === (int)$selectedFeature ? ' selected' : '').'>'.htmlspecialchars($featureName).'</option>';
         }
@@ -1612,7 +1622,8 @@ protected function renderGenerator(): string
     }
     $html .= '</tbody></table>';
 
-    $html .= '<button type="submit" class="btn btn-success">'.$this->l('Generuj powiązania').'</button>';
+        $generateDisabled = $selectedFeature ? '' : ' disabled';
+    $html .= '<button type="submit" class="btn btn-success" id="lp-generate-btn"'.$generateDisabled.'>'.$this->l('Generuj powiązania').'</button>';
     $html .= '</form>';
 
     // 📄 paginacja
@@ -1645,6 +1656,17 @@ protected function renderGenerator(): string
             var boxes=document.querySelectorAll("input[name=\'selected_products[]\']");
             for(var i=0;i<boxes.length;i++){boxes[i].checked=checkAll.checked;}
         });}
+        
+        var suggestedGroups=document.getElementById("lp-suggested-groups");
+        var generateBtn=document.getElementById("lp-generate-btn");
+        function toggleGenerateBtn(){
+            if(!suggestedGroups||!generateBtn){return;}
+            generateBtn.disabled=suggestedGroups.value==="";
+        }
+        if(suggestedGroups){
+            suggestedGroups.addEventListener("change",toggleGenerateBtn);
+            toggleGenerateBtn();
+        }
     })();</script>';
 
     $html .= '</div>'; // panel
