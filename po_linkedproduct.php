@@ -32,7 +32,6 @@ class Po_linkedproduct extends Module
 
     public function install()
     {
-        Configuration::updateValue('PO_LINKEDPRODUCT_LIVE_MODE', false);
         Configuration::updateValue('PO_LINKEDPRODUCT_OPENAI_URL', '');
         Configuration::updateValue('PO_LINKEDPRODUCT_OPENAI_KEY', '');
         Configuration::updateValue('PO_LINKEDPRODUCT_OPENAI_MODEL', 'gpt-5-chat-latest');
@@ -50,7 +49,6 @@ class Po_linkedproduct extends Module
 
     public function uninstall()
     {
-        Configuration::deleteByName('PO_LINKEDPRODUCT_LIVE_MODE');
         Configuration::deleteByName('PO_LINKEDPRODUCT_OPENAI_URL');
         Configuration::deleteByName('PO_LINKEDPRODUCT_OPENAI_KEY');
         Configuration::deleteByName('PO_LINKEDPRODUCT_OPENAI_MODEL');
@@ -457,18 +455,15 @@ protected function renderSettingsForm(): string
     $output = '';
 
     if (Tools::isSubmit('submitPoLinkedProductSettings')) {
-        $live = (bool) Tools::getValue('PO_LINKEDPRODUCT_LIVE_MODE');
         $url  = (string) Tools::getValue('PO_LINKEDPRODUCT_OPENAI_URL');
         $key  = (string) Tools::getValue('PO_LINKEDPRODUCT_OPENAI_KEY');
 
-        Configuration::updateValue('PO_LINKEDPRODUCT_LIVE_MODE', $live);
         Configuration::updateValue('PO_LINKEDPRODUCT_OPENAI_URL', $url);
         Configuration::updateValue('PO_LINKEDPRODUCT_OPENAI_KEY', $key);
 
         $output .= $this->displayConfirmation($this->l('Settings updated'));
     }
 
-    $liveVal = (bool) Configuration::get('PO_LINKEDPRODUCT_LIVE_MODE');
     $urlVal  = (string) Configuration::get('PO_LINKEDPRODUCT_OPENAI_URL');
     $keyVal  = (string) Configuration::get('PO_LINKEDPRODUCT_OPENAI_KEY');
 
@@ -476,18 +471,6 @@ protected function renderSettingsForm(): string
     <form method="post" class="defaultForm form-horizontal">
         <div class="panel">
             <div class="panel-heading">'.$this->l('Ustawienia').'</div>
-            <div class="form-group">
-                <label class="control-label col-lg-3">'.$this->l('Live mode').'</label>
-                <div class="col-lg-9">
-                    <span class="switch prestashop-switch fixed-width-lg">
-                        <input type="radio" name="PO_LINKEDPRODUCT_LIVE_MODE" id="live_on" value="1" '.($liveVal ? 'checked="checked"' : '').'/>
-                        <label for="live_on">'.$this->l('Enabled').'</label>
-                        <input type="radio" name="PO_LINKEDPRODUCT_LIVE_MODE" id="live_off" value="0" '.(!$liveVal ? 'checked="checked"' : '').'/>
-                        <label for="live_off">'.$this->l('Disabled').'</label>
-                        <a class="slide-button btn"></a>
-                    </span>
-                </div>
-            </div>
 
             <div class="form-group">
                 <label class="control-label col-lg-3">'.$this->l('OpenAI Base URL').'</label>
@@ -617,6 +600,7 @@ protected function persistGeneratedGroups(array $groups, \Db $db, array $languag
                 }
             }
             $groupId         = 0;
+            $existingProductIds = [];
 
             if ($incomingGroupId > 0) {
                 // 🔹 UPDATE istniejącej grupy
@@ -626,6 +610,13 @@ protected function persistGeneratedGroups(array $groups, \Db $db, array $languag
                 ], 'id='.(int)$incomingGroupId);
 
                 $groupId = $incomingGroupId;
+
+                // 🔹 Pobierz istniejące produkty, aby dodać tylko brakujące
+                $existingProducts = $db->executeS('SELECT DISTINCT product_id FROM '._DB_PREFIX_.'po_linkedproduct_row WHERE group_id='.(int)$groupId);
+                if (is_array($existingProducts)) {
+                    $existingProductIds = array_map('intval', array_column($existingProducts, 'product_id'));
+                }
+
 
                 // 🔹 Upsert tytułów wielojęzycznych
                 foreach ($languages as $lang) {
@@ -646,12 +637,12 @@ protected function persistGeneratedGroups(array $groups, \Db $db, array $languag
                     }
                 }
 
-                // 🔹 Czyścimy stare wiersze
-                $rows = $db->executeS('SELECT id FROM '._DB_PREFIX_.'po_linkedproduct_row WHERE group_id='.(int)$groupId);
-                foreach ($rows as $r) {
-                    $db->delete('po_linkedproduct_row_lang', 'id_row='.(int)$r['id']);
-                }
-                $db->delete('po_linkedproduct_row', 'group_id='.(int)$groupId);
+                // // 🔹 Czyścimy stare wiersze
+                // $rows = $db->executeS('SELECT id FROM '._DB_PREFIX_.'po_linkedproduct_row WHERE group_id='.(int)$groupId);
+                // foreach ($rows as $r) {
+                //     $db->delete('po_linkedproduct_row_lang', 'id_row='.(int)$r['id']);
+                // }
+                // $db->delete('po_linkedproduct_row', 'group_id='.(int)$groupId);
 
             } else {
                 // 🔹 NOWA grupa
@@ -672,7 +663,11 @@ protected function persistGeneratedGroups(array $groups, \Db $db, array $languag
             }
 
             // 🔹 Pozycja per produkt (opcjonalnie z JSON)
-            foreach ($productIds as $pid) {
+            $productsToInsert = $incomingGroupId > 0
+                ? array_values(array_diff($productIds, $existingProductIds))
+                : $productIds;
+
+            foreach ($productsToInsert as $pid) {
                 $perProductPos = $group['positions'][$pid] ?? null;
                 $finalPos      = $perProductPos !== null ? (int)$perProductPos : $groupPosition;
 
@@ -683,7 +678,7 @@ protected function persistGeneratedGroups(array $groups, \Db $db, array $languag
             // 🔹 Wiersze + wartości językowe
             $values = $group['values'] ?? [];
 
-            foreach ($productIds as $pid) {
+            foreach ($productsToInsert as $pid) {
                 $db->insert('po_linkedproduct_row', [
                     'group_id'   => $groupId,
                     'product_id' => $pid,
@@ -1526,13 +1521,7 @@ protected function renderGenerator(): string
             '.$modelOptions.'
         </select>
     </div>';
-    $html .= '<div class="form-group">
-        <label>'.$this->l('Typ generowanej grupy').'</label>
-        <select name="generation_group_type" class="form-control">
-            <option value="text"'.($generationGroupType === 'text' ? ' selected' : '').'>'.$this->l('Tekst').'</option>
-            <option value="photo"'.($generationGroupType === 'photo' ? ' selected' : '').'>'.$this->l('Zdjęcie').'</option>
-        </select>
-    </div>';
+
     $html .= '<div class="form-group">
         <label>'.$this->l('Sugerowane grupy do wygenerowania').'</label>';
     if (!empty($featureOptions)) {
@@ -1547,7 +1536,13 @@ protected function renderGenerator(): string
     }
     $html .= '
     </div>';
-
+    $html .= '<div class="form-group">
+        <label>'.$this->l('Typ generowanej grupy').'</label>
+        <select name="generation_group_type" class="form-control">
+            <option value="text"'.($generationGroupType === 'text' ? ' selected' : '').'>'.$this->l('Tekst').'</option>
+            <option value="photo"'.($generationGroupType === 'photo' ? ' selected' : '').'>'.$this->l('Zdjęcie').'</option>
+        </select>
+    </div>';
     // tabela produktów
     $html .= '<table class="table"><thead>
         <tr>
