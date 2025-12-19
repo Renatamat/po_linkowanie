@@ -70,6 +70,27 @@ function attachListeners($item) {
     updateGroupTitleDisplay($item);
   });
 }
+// --- Buforowany token administracyjny z wielu źródeł (meta, input, URL, global)
+var poAdminToken;
+function resolveAdminToken() {
+    if (poAdminToken !== undefined) {
+        return poAdminToken;
+    }
+
+    var searchParams = new URLSearchParams(window.location.search);
+    poAdminToken = searchParams.get('_token')
+            || searchParams.get('token')
+            || (document.querySelector('meta[name="csrf-token"]') || {}).content
+            || (document.querySelector('input[name="_token"]') || {}).value
+            || (document.querySelector('input[name="token"]') || {}).value
+            || window.token
+            || (window.prestashop || {}).token
+            || window.securityToken
+            || null;
+
+    return poAdminToken;
+}
+
 // --- PS 9: zbuduj URL Symfony /sell/catalog/products/search/<iso>?query=...&_token=...
 function getSfSearchUrl(query) {
     var path = window.location.pathname;
@@ -78,10 +99,7 @@ function getSfSearchUrl(query) {
         return null;
 
     var adminBase = window.location.origin + path.slice(0, sellIdx);
-    var token = new URLSearchParams(window.location.search).get('_token')
-            || (document.querySelector('meta[name="csrf-token"]') || {}).content
-            || (document.querySelector('input[name="_token"]') || {}).value
-            || null;
+    var token = resolveAdminToken();
     if (!token)
         return null;
 
@@ -92,6 +110,11 @@ function getSfSearchUrl(query) {
 }
 
 function getLegacyAjaxOptions(query, limit) {
+    var adminToken = resolveAdminToken();
+    if (!adminToken) {
+        console.warn('[po_linkedproduct] Brak tokenu administracyjnego – zapytanie legacy może się nie powieść.');
+    }
+
     return {
         url: 'index.php',
         type: 'GET',
@@ -106,7 +129,7 @@ function getLegacyAjaxOptions(query, limit) {
             exclude_packs: 0,
             excludeVirtuals: 0,
             limit: limit || 15,
-            token: token, 
+            token: adminToken,
             q: query
         }
     };
