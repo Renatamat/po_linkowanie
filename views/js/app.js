@@ -10,6 +10,7 @@ function createProductItem(productId, productName, productImage, number) {
   html += '    <label class="col-auto control-label align-self-center mb-0"><strong>' + labelVariantName + '</strong></label>';
   html += '    <div class="flex-fill">';
   html += '      <input type="hidden" name="linking_products[' + number + '][related_products][' + productId + '][product_id]" value="' + productId + '">';
+  html += '      <input type="hidden" class="related-product-position" name="linking_products[' + number + '][related_products][' + productId + '][position]" value="0">';
   for (var i = 0; i < languages.length; i++) {
     var lang = languages[i];
     var style = (lang.id_lang == defaultLang) ? '' : ' style="display:none"';
@@ -36,6 +37,14 @@ function createProductItem(productId, productName, productImage, number) {
   return html;
 }
 
+function updateRelatedPositions($list) {
+  if (!$list || !$list.length) {
+    return;
+  }
+  $list.find('.selected-product').each(function(index) {
+    $(this).find('.related-product-position').val(index + 1);
+  });
+}
 
 function updateGroupTitleDisplay($item) {
   var titleInput = $item.find('input[name$="[group_title][' + defaultLang + ']"]');
@@ -203,6 +212,7 @@ function renderProductsList(productList, productListSetup, resp, onSelect) {
 
       // Dodaj element do wybranych
       $target.append(createProductItem(productId, productName, productImage, number));
+      updateRelatedPositions($target);
 
       // Aktualizacja licznika w repeaterze
       var selectedProducts = $repeaterItem.find('.selected-product').length;
@@ -301,8 +311,12 @@ var repeater = $('.repeater-default').repeater({
       handle: '.product-handle',
       placeholder: 'product-placeholder',
       opacity: 0.7,
-      cancel: 'input, textarea, button, select'
+      cancel: 'input, textarea, button, select',
+      update: function() {
+        updateRelatedPositions($(this));
+      }
     });
+    updateRelatedPositions($(this).find('.product-list-setup'));
     jQuery('.drag-positions').sortable('refresh');
   // AJAX
   $('.product-search').on('input', function() {
@@ -321,7 +335,9 @@ var repeater = $('.repeater-default').repeater({
 
         });
     $(this).find('.product-list-setup').on('click', '.selected-product .remove-product', function() {
+        var $list = $(this).closest('.product-list-setup');
         $(this).closest('.selected-product').remove();
+        updateRelatedPositions($list);
       });
 
       
@@ -359,7 +375,10 @@ function updatePositions() {
       handle: ".product-handle",
       placeholder: "product-placeholder",
       opacity: 0.7,
-      cancel: 'input, textarea, button, select'
+      cancel: 'input, textarea, button, select',
+      update: function() {
+        updateRelatedPositions($(this));
+      }
   });
 
       $(document).ready(function() {
@@ -368,6 +387,7 @@ function updatePositions() {
           $(this).find('input[name$="[group_title][' + defaultLang + ']"]').attr('required', true);
           attachListeners($(this));
           updateGroupTitleDisplay($(this));
+          updateRelatedPositions($(this).find('.product-list-setup'));
         });
         $('.product-search').on('input', function() {
           var searchValue = $(this).val();
@@ -406,6 +426,7 @@ function updatePositions() {
         var $repeaterItemElement = $parent.closest('.data-repeater-item');
         
         $parent.remove();
+        updateRelatedPositions($repeaterItemElement.find('.product-list-setup'));
         
         var selectedProducts = $repeaterItemElement.find('.selected-product').length;
       
@@ -454,4 +475,3 @@ $(document).on('click', '.btn-reset-search', function () {
     if ($rep.length)
         $rep.removeData('poNewGroupPickMode');
 });
-

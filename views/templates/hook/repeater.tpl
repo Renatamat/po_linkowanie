@@ -161,7 +161,7 @@
                     <div class="col-sm-12">
                         
                         <ul class="product-list-setup" data-list-setup-id="{$index + 1}">
-                            {foreach $related_products as $related_product}
+                            {foreach $related_products as $related_product name=related_products}
                                 <li class="selected-product d-flex flex-wrap" data-id="{$related_product.product_id}">
                                     <span class="product-handle">&#9776;</span>                                    
                                     <div class="col-sm-11 col-md-5 col-xl-6 d-flex flex-row">
@@ -172,6 +172,7 @@
                                     <label class="col-auto control-label align-self-center mb-0"><strong>{l s='Variant name' mod='po_linkedproduct'}</strong></label>
                                     <div class="flex-fill">
                                         <input type="hidden"  name="linking_products[{$index}][related_products][{$related_product.product_id}][product_id]" value="{$related_product.product_id}" />
+                                        <input type="hidden" class="related-product-position" name="linking_products[{$index}][related_products][{$related_product.product_id}][position]" value="{if isset($related_product.position)}{$related_product.position}{else}{$smarty.foreach.related_products.iteration}{/if}" />
                                         {foreach from=$languages item=language}
                                         <div class="translatable-field lang-{$language.id_lang}" {if $language.id_lang != $default_form_language}style="display:none"{/if}>
                                             <input type="text" name="linking_products[{$index}][related_products][{$related_product.product_id}][value][{$language.id_lang}]" value="{$related_product.value[$language.id_lang]}" class="form-control">
