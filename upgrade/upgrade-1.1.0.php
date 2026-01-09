@@ -36,10 +36,11 @@ function upgrade_module_1_1_0($module)
 {
     $db = Db::getInstance();
     $table = _DB_PREFIX_ . 'po_linkedproduct_row';
-    $hasPosition = (bool) $db->getValue('SHOW COLUMNS FROM `' . pSQL($table) . '` LIKE "position"');
+    $columns = $db->executeS('SHOW COLUMNS FROM `' . $table . '` LIKE "position"');
+    $hasPosition = !empty($columns);
 
     if (!$hasPosition) {
-        if (!$db->execute('ALTER TABLE `' . pSQL($table) . '` ADD COLUMN `position` INT(11) NOT NULL DEFAULT 0')) {
+        if (!$db->execute('ALTER TABLE `' . $table . '` ADD COLUMN `position` INT(11) NOT NULL DEFAULT 0')) {
             return false;
         }
     }
