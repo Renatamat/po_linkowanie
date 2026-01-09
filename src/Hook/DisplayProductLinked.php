@@ -29,7 +29,9 @@ class DisplayProductLinked extends AbstractDisplayHook
             . 'FROM ' . _DB_PREFIX_ . 'po_linkedproduct pl '
             . 'INNER JOIN ' . _DB_PREFIX_ . 'po_linkedproduct_row pr ON pr.group_id = pl.id AND pr.product_id = ' . (int) $productId . ' '
             . 'LEFT JOIN ' . _DB_PREFIX_ . 'po_linkedproduct_position pp ON pl.id = pp.group_id AND pp.product_id = ' . (int) $productId . ' '
-            . 'LEFT JOIN ' . _DB_PREFIX_ . 'po_linkedproduct_lang pll ON pl.id = pll.id AND pll.id_lang = ' . (int) $this->context->language->id;
+            . 'LEFT JOIN ' . _DB_PREFIX_ . 'po_linkedproduct_lang pll ON pl.id = pll.id AND pll.id_lang = ' . (int) $this->context->language->id .' '
+            . 'ORDER BY position ASC';
+
         $result = $db->executeS($sql);
         $positions = [];
         $relatedProductNames = [];
@@ -84,9 +86,10 @@ class DisplayProductLinked extends AbstractDisplayHook
                 'related_products' => $relatedProducts,
             ];
         }
-        usort($positions, function ($a, $b) {
-            return $a['position'] - $b['position'];
-        });
+//        usort($positions, function ($a, $b) {
+//            return $a['position'] - $b['position'];
+//        });
+        
         $this->context->smarty->assign([
             'positions' => $positions,
             'related_product_names' => $relatedProductNames,

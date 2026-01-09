@@ -845,6 +845,11 @@ protected function saveAjaxGroupField(): string
             if (!$db->update('po_linkedproduct', ['position' => (int) $value], 'id='.(int) $groupId)) {
                 throw new \Exception($this->l('Nie udało się zaktualizować pozycji grupy.'));
             }
+            $productId = (int) Tools::getValue('product_id');
+            if ($productId > 0) {
+                $db->execute('REPLACE INTO '._DB_PREFIX_.'po_linkedproduct_position (product_id, group_id, position) VALUES ('
+                    . (int) $productId . ', ' . (int) $groupId . ', ' . (int) $value . ')');
+            }
             return $this->l('Pozycja grupy zapisana.');
 
         case 'title':
@@ -1443,12 +1448,13 @@ protected function renderGenerator(): string
     }
 
     $availableModels = [
-        'gpt-5-chat-latest' => 'gpt-5-chat-latest',
+        'gpt-5.2' => 'gpt-5.2 (szybszy)',
+        'gpt-5.2-pro' => 'gpt-5.2-pro (wolny)',
         'gpt-4o' => 'gpt-4o',
-        'gpt-4o-mini' => 'gpt-4o-mini',
+        'gpt-4o-mini' => 'gpt-4o-mini (bardzo szybki)',
         'o3-mini' => 'o3-mini',
     ];
-    $modelVal = (string) \Configuration::get('PO_LINKEDPRODUCT_OPENAI_MODEL') ?: 'gpt-5-chat-latest';
+    $modelVal = (string) \Configuration::get('PO_LINKEDPRODUCT_OPENAI_MODEL') ?: 'gpt-5.2';
     $modelVal = (string) Tools::getValue('PO_LINKEDPRODUCT_OPENAI_MODEL', $modelVal);
     $modelOptions = '';
     foreach ($availableModels as $modelKey => $modelLabel) {
@@ -1500,6 +1506,8 @@ protected function renderGenerator(): string
         }
     }
     $html .= '<input type="hidden" name="po_tab" value="generator">';
+    $html .= '<input type="hidden" name="_token" value="' . htmlspecialchars($token) . '">';
+    $html .= '<input type="hidden" name="token" value="' . htmlspecialchars($token) . '">';
     $html .= '<div class="form-group">
         <input class="form-control" type="text" name="q" value="'.htmlspecialchars($search).'" placeholder="'.$this->l('Szukaj po nazwie').'">
     </div>
@@ -1519,12 +1527,12 @@ protected function renderGenerator(): string
     $html .= '<input type="hidden" name="generate_linked" value="1">';
 
     // pola dodatkowe
-    $html .= '<div class="form-inline" style="margin-bottom:10px">
-        <div class="form-group">
-            <label style="margin-right:8px">'.$this->l('Limit grup (opcjonalnie)').'</label>
-            <input class="form-control" type="number" min="0" name="group_count" value="'.(int)Tools::getValue('group_count', 0).'" style="width:120px">
-        </div>
-    </div>';
+//    $html .= '<div class="form-inline" style="margin-bottom:10px">
+//        <div class="form-group">
+//            <label style="margin-right:8px">'.$this->l('Limit grup (opcjonalnie)').'</label>
+//            <input class="form-control" type="number" min="0" name="group_count" value="'.(int)Tools::getValue('group_count', 0).'" style="width:120px">
+//        </div>
+//    </div>';
     $html .= '<div class="form-group">
         <label>'.$this->l('Model').'</label>
         <select name="PO_LINKEDPRODUCT_OPENAI_MODEL" class="form-control">
@@ -1559,7 +1567,9 @@ protected function renderGenerator(): string
             <th style="width:70px">'.$this->l('Zdjęcie').'</th>
             <th>'.$this->l('Nazwa').'</th>
             <th style="width:120px"><input type="checkbox" id="checkAll"> '.$this->l('Zaznacz wszystkie').'</th>
-            <th style="width:100px">'.$this->l('Powiązany?').'</th>
+            <th style="width:100px">
+                <a href="#" class="btn btn-default btn-xs" id="lp-toggle-all-generator">'.$this->l('Pokaż / ukryj wszystkie').'</a>                             
+            </th>
         </tr></thead><tbody>';
 
     foreach ($rows as $p) {
@@ -1573,8 +1583,15 @@ protected function renderGenerator(): string
        $html .= '<tr>
             <td>'.($imgUrl ? '<img src="'.$imgUrl.'" style="height:50px">' : '-').'</td>
             <td>'.htmlspecialchars($p['name']).' <small class="text-muted">#'.$pid.'</small></td>
-            <td><input type="checkbox" name="selected_products[]" value="'.$pid.'"></td>
-            <td class="text-center">'.($linked ? '✅' : '❌').'</td>
+            <td><input type="checkbox" name="selected_products[]" value="'.$pid.'"></td>                
+            <td class="text-center">
+                <span 
+                    data-bs-toggle="tooltip" 
+                    data-bs-placement="top"
+                    title="'.($linked ?  'Powiązany' : 'Niepowiązany').'">'
+                    .($linked ? '✅' : '❌').'
+                </span>
+            </td>
         </tr>';
 
 
@@ -1583,7 +1600,7 @@ protected function renderGenerator(): string
         $html .= '<tr class="active"><td colspan="4" style="background:#fafafa">
             <div style="display:flex;justify-content:space-between;align-items:center;">
                 <strong>'.$this->l('Powiązania dla produktu').' #'.$pid.'</strong>
-                <a href="#" class="btn btn-default btn-xs lp-toggle" data-target="#lp-details-'.$pid.'">'.$this->l('Pokaż / ukryj').'</a>
+                <a href="#" class="btn btn-default btn-xs lp-toggle w-100" data-target="#lp-details-'.$pid.'">'.$this->l('Pokaż / ukryj').'</a>
             </div>
             <div id="lp-details-'.$pid.'" style="margin:16px 32px;display:none">';
         if (!$groups) {
@@ -1655,6 +1672,19 @@ protected function renderGenerator(): string
         if(checkAll){checkAll.addEventListener("change",function(){
             var boxes=document.querySelectorAll("input[name=\'selected_products[]\']");
             for(var i=0;i<boxes.length;i++){boxes[i].checked=checkAll.checked;}
+        });}
+        
+        var toggleAllBtn=document.getElementById("lp-toggle-all-generator");
+        if(toggleAllBtn){toggleAllBtn.addEventListener("click",function(e){
+            e.preventDefault();
+            var details=document.querySelectorAll("div[id^=\'lp-details-\']");
+            var shouldShow=false;
+            for(var i=0;i<details.length;i++){
+                if(details[i].style.display==="none"||details[i].style.display===""){shouldShow=true;break;}
+            }
+            for(var j=0;j<details.length;j++){
+                details[j].style.display=shouldShow?"block":"none";
+            }
         });}
         
         var suggestedGroups=document.getElementById("lp-suggested-groups");
@@ -1733,6 +1763,8 @@ protected function renderMassEdit(): string
         }
     }
     $html .= '<input type="hidden" name="po_tab" value="mass_edit">';
+    $html .= '<input type="hidden" name="_token" value="' . htmlspecialchars($token) . '">';
+    $html .= '<input type="hidden" name="token" value="' . htmlspecialchars($token) . '">';
     $html .= '<div class="form-group">
         <input class="form-control" type="text" name="q" value="'.htmlspecialchars($search).'" placeholder="'.$this->l('Szukaj po nazwie').'">
     </div>
@@ -1767,7 +1799,9 @@ protected function renderMassEdit(): string
             <th style="width:70px">'.$this->l('Zdjęcie').'</th>
             <th>'.$this->l('Nazwa').'</th>
             <th style="width:100px">'.$this->l('Powiązany?').'</th>
-            <th style="width:120px">'.$this->l('Akcje').'</th>
+            <th style="width:120px">
+                  <a href="#" class="btn btn-default btn-xs" id="lp-toggle-all-mass">'.$this->l('Pokaż / ukryj wszystkie').'</a>
+                      </th>
         </tr></thead><tbody>';
 
     foreach ($rows as $p) {
@@ -1783,7 +1817,7 @@ protected function renderMassEdit(): string
             <td>'.($imgUrl ? '<img src="'.$imgUrl.'" style="height:50px">' : '-').'</td>
             <td>'.htmlspecialchars($p['name']).' <small class="text-muted">#'.$pid.'</small></td>
             <td class="text-center" data-original-status="'.$statusIcon.'">'.$statusIcon.'</td>
-            <td><a href="#" class="btn btn-default btn-xs lp-toggle" data-target="#lp-details-'.$pid.'">'.$this->l('Pokaż / ukryj').'</a></td>
+            <td><a href="#" class="btn btn-default btn-xs lp-toggle w-100" data-target="#lp-details-'.$pid.'">'.$this->l('Pokaż / ukryj').'</a></td>
         </tr>';
 
         $html .= '<tr class="active"><td colspan="4" style="background:#fafafa">
@@ -1859,7 +1893,112 @@ $html .= '</form>';
     for (var i = 0; i < toggles.length; i++) {
         toggles[i].addEventListener('click', toggleHandler);
     }
+            
+    var toggleAllBtn = document.getElementById('lp-toggle-all-mass');
+    if (toggleAllBtn) {
+        toggleAllBtn.addEventListener('click', function(e){
+            e.preventDefault();
+            var details = document.querySelectorAll("div[id^='lp-details-']");
+            var shouldShow = false;
+            for (var i = 0; i < details.length; i++) {
+                if (details[i].style.display === 'none' || details[i].style.display === '') {
+                    shouldShow = true;
+                    break;
+                }
+            }
+            for (var j = 0; j < details.length; j++) {
+                details[j].style.display = shouldShow ? 'block' : 'none';
+            }
+        });
+    }
+         var draggingGroup = null;
 
+    function updateGroupPositions(editor){
+        if (!editor) {
+            return;
+        }
+        var groups = editor.querySelectorAll('.lp-group');
+        for (var i = 0; i < groups.length; i++) {
+            var group = groups[i];
+            var pos = i + 1;
+            var posInput = group.querySelector('input[name^="groups["][name$="[position]"]');
+            if (posInput && String(posInput.value) !== String(pos)) {
+                posInput.value = pos;
+                posInput.dispatchEvent(new Event('input', { bubbles: true }));
+                if (canAutoSave) {
+                    autoSaveField(posInput);
+                }
+            }
+            var posLabel = group.querySelector('.lp-group-position');
+            if (posLabel) {
+                posLabel.textContent = 'pos: ' + pos;
+            }
+        }
+        var firstGroup = editor.querySelector('.lp-group');
+        if (firstGroup) {
+            updateStatus(firstGroup.getAttribute('data-product-id'), 'dirty');
+        }
+    }
+
+    function initGroupDnD(){
+        var editors = document.querySelectorAll('.groups-editor');
+        for (var i = 0; i < editors.length; i++) {
+            (function(editor){
+                var groups = editor.querySelectorAll('.lp-group');
+                for (var j = 0; j < groups.length; j++) {
+                    (function(group){
+                        var handle = group.querySelector('.lp-group-handle');
+                        if (!handle) {
+                            return;
+                        }
+                        handle.setAttribute('draggable', 'true');
+                        handle.addEventListener('dragstart', function(e){
+                            draggingGroup = group;
+                            group.classList.add('lp-dragging');
+                            e.dataTransfer.effectAllowed = 'move';
+                            try {
+                                e.dataTransfer.setData('text/plain', group.getAttribute('data-group-id') || '');
+                            } catch (err) {
+                                // brak wsparcia
+                            }
+                        });
+                        handle.addEventListener('dragend', function(){
+                            if (draggingGroup) {
+                                draggingGroup.classList.remove('lp-dragging');
+                            }
+                            draggingGroup = null;
+                            updateGroupPositions(editor);
+                        });
+                        group.addEventListener('dragover', function(e){
+                            if (!draggingGroup || draggingGroup === group) {
+                                return;
+                            }
+                            e.preventDefault();
+                            e.dataTransfer.dropEffect = 'move';
+                            var rect = group.getBoundingClientRect();
+                            var before = (e.clientY - rect.top) < rect.height / 2;
+                            if (before) {
+                                if (group.previousSibling !== draggingGroup) {
+                                    editor.insertBefore(draggingGroup, group);
+                                }
+                            } else if (group.nextSibling !== draggingGroup) {
+                                editor.insertBefore(draggingGroup, group.nextSibling);
+                            }
+                        });
+                        group.addEventListener('drop', function(e){
+                            if (!draggingGroup) {
+                                return;
+                            }
+                            e.preventDefault();
+                            updateGroupPositions(editor);
+                        });
+                    })(groups[j]);
+                }
+            })(editors[i]);
+        }
+    }
+        
+        
     function getProductIdFromInput(input){
         if (!input) {
             return null;
@@ -1961,6 +2100,7 @@ $html .= '</form>';
         if (meta.field) { formData.append('field', meta.field); }
         if (meta.id_lang) { formData.append('id_lang', meta.id_lang); }
         if (meta.row_id) { formData.append('row_id', meta.row_id); }
+        if (meta.target === 'group' && pid) { formData.append('product_id', pid); }
 
         formData.append('value', input.value);
 
@@ -2043,6 +2183,7 @@ console.groupEnd();
             });
         }
     });
+    initGroupDnD();
 })();
 JS;
     $html .= '<script>'.$script.'</script>';
@@ -2064,12 +2205,13 @@ protected function renderGroupsEditor(int $pid, array $groups, string $adminActi
         foreach ($groups as $g) {
             $gid = (int)$g['id'];
 
-            $html .= '<div class="panel lp-group" data-product-id="'.$pid.'">
+             $html .= '<div class="panel lp-group" data-product-id="'.$pid.'" data-group-id="'.$gid.'">
                 <div class="panel-heading" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+                    <span class="lp-group-handle" title="'.$this->l('Przeciągnij, aby zmienić kolejność').'" style="cursor:move;font-size:16px;">☰</span>
                     <span class="label label-default">#'.$gid.'</span>
                     <span class="label label-info">'.htmlspecialchars($g['type']).'</span>
                     <strong>'.htmlspecialchars($g['title']).'</strong>
-                    <span class="text-muted">pos: '.(int)$g['position'].'</span>
+                    <span class="text-muted lp-group-position">pos: '.(int)$g['position'].'</span>
 
                     <input type="hidden" name="group_id['.$gid.']" value="'.$gid.'">
 
@@ -2122,8 +2264,11 @@ protected function renderGroupsEditor(int $pid, array $groups, string $adminActi
                                 <th style="width:90px">'.$this->l('Row ID').'</th>
                                 <th style="width:90px">'.$this->l('Product ID').'</th>
                                 <th>'.$this->l('Produkt').'</th>
-                                <th>'.$this->l('Wartości dla języków').'</th>
-                                <th style="width:120px">'.$this->l('Akcje').'</th>
+                                <th>'.$this->l('Wartości dla języków').'</th>                               
+                                <th style="width:120px">
+                                    '.$this->l('Akcje').'
+                                  
+                                </th>
                             </tr>
                         </thead>
                         <tbody>';
