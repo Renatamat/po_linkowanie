@@ -54,6 +54,7 @@ $sql[] = 'CREATE TABLE IF NOT EXISTS `' . _DB_PREFIX_ . 'po_linkedproduct_row` (
     `id` INT(11) NOT NULL AUTO_INCREMENT,
     `group_id` INT(11) NOT NULL,
     `product_id` INT(11) NOT NULL,
+    `position` INT(11) NOT NULL DEFAULT 0,
     `value` VARCHAR(255) NOT NULL,
     PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8;';

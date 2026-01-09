@@ -16,7 +16,7 @@ class Po_linkedproduct extends Module
     {
         $this->name = 'po_linkedproduct';
         $this->tab = 'others';
-        $this->version = '1.0.0';
+        $this->version = '1.1.0';
         $this->author = 'Przemysław Markiewicz';
         $this->need_instance = 0;
         $this->bootstrap = true;
@@ -142,6 +142,13 @@ class Po_linkedproduct extends Module
                     $db->execute('START TRANSACTION');
                     try {
                         foreach ($rows as $rowId => $data) {
+                            if (isset($data['position'])) {
+                                $db->update(
+                                    'po_linkedproduct_row',
+                                    ['position' => (int) $data['position']],
+                                    'id = ' . (int) $rowId
+                                );
+                            }
                             foreach ($this->languages as $lang) {
                                 $idLang = (int) $lang['id_lang'];
                                 $val    = $data['value'] ?? '';
@@ -678,10 +685,13 @@ protected function persistGeneratedGroups(array $groups, \Db $db, array $languag
             // 🔹 Wiersze + wartości językowe
             $values = $group['values'] ?? [];
 
-            foreach ($productsToInsert as $pid) {
+            $rowPositionBase = (int) $db->getValue('SELECT MAX(position) FROM ' . _DB_PREFIX_ . 'po_linkedproduct_row WHERE group_id=' . (int) $groupId);
+            foreach (array_values($productsToInsert) as $index => $pid) {
+                $rowPosition = $rowPositionBase + $index + 1;
                 $db->insert('po_linkedproduct_row', [
                     'group_id'   => $groupId,
                     'product_id' => $pid,
+                    'position'   => $rowPosition,
                     'value'      => '',
                 ]);
                 $rowId = (int)$db->Insert_ID();
@@ -885,15 +895,23 @@ protected function saveAjaxRowField(): string
     $rowId  = (int) Tools::getValue('row_id');
     $idLang = (int) Tools::getValue('id_lang');
     $value  = (string) Tools::getValue('value', '');
+    $field  = (string) Tools::getValue('field', 'value');
 
     if ($rowId <= 0) {
         throw new \Exception($this->l('Brak identyfikatora powiązania.'));
     }
+    $db = \Db::getInstance();
+
+    if ($field === 'position') {
+        if (!$db->update('po_linkedproduct_row', ['position' => (int) $value], 'id='.(int)$rowId)) {
+            throw new \Exception($this->l('Nie udało się zapisać pozycji powiązania.'));
+        }
+        return $this->l('Pozycja powiązania zapisana.');
+    }
+
     if ($idLang <= 0) {
         $idLang = (int) $this->context->language->id;
     }
-
-    $db = \Db::getInstance();
 
     $exists = (int) $db->getValue('
         SELECT COUNT(*) 
@@ -944,7 +962,7 @@ protected function fetchGroupsMatrix(array $productIds, int $idLang): array
     $sql = '
         SELECT g.id AS gid, g.type, g.position,
                gl.group_title,
-               r.id AS row_id, r.product_id,
+               r.id AS row_id, r.product_id, r.position AS row_position,
                rl.value
         FROM '._DB_PREFIX_.'po_linkedproduct g
         INNER JOIN '._DB_PREFIX_.'po_linkedproduct_lang gl ON (gl.id=g.id AND gl.id_lang='.(int)$idLang.')
@@ -955,7 +973,7 @@ protected function fetchGroupsMatrix(array $productIds, int $idLang): array
             FROM '._DB_PREFIX_.'po_linkedproduct_row r2
             WHERE r2.product_id IN ('.$idsSql.')
         )
-        ORDER BY g.position ASC, g.id ASC, r.id ASC
+        ORDER BY g.position ASC, g.id ASC, r.position ASC, r.id ASC
     ';
 
     $rows = $db->executeS($sql) ?: [];
@@ -1002,6 +1020,7 @@ foreach ($db->executeS($namesSql) ?: [] as $n) {
         $groupsById[$gid]['rows'][] = [
     'row_id'       => (int)$r['row_id'],
     'product_id'   => $pid,
+    'position'     => (int) $r['row_position'],
     'product_name' => $names[$pid]['name'] ?? ('#'.$pid),
     'value'        => isset($r['value']) ? (string)$r['value'] : null,
     'image_url'    => (!empty($names[$pid]['id_image']) && !empty($names[$pid]['link_rewrite']))
@@ -1912,6 +1931,7 @@ $html .= '</form>';
         });
     }
          var draggingGroup = null;
+         var draggingRow = null;
 
     function updateGroupPositions(editor){
         if (!editor) {
@@ -1997,6 +2017,97 @@ $html .= '</form>';
             })(editors[i]);
         }
     }
+
+    function updateRowPositions(tableBody, skipAutosave){
+        if (!tableBody) {
+            return;
+        }
+        var rows = tableBody.querySelectorAll('tr.lp-row');
+        for (var i = 0; i < rows.length; i++) {
+            var row = rows[i];
+            var pos = i + 1;
+            var posInput = row.querySelector('input[name^="rows["][name$="[position]"]');
+            if (posInput && String(posInput.value) !== String(pos)) {
+                posInput.value = pos;
+                posInput.dispatchEvent(new Event('input', { bubbles: true }));
+                if (canAutoSave && !skipAutosave) {
+                    autoSaveField(posInput);
+                }
+            }
+            var posLabel = row.querySelector('.lp-row-position');
+            if (posLabel) {
+                posLabel.textContent = String(pos);
+            }
+        }
+        if (!skipAutosave) {
+            var firstRow = rows.length ? rows[0] : null;
+            if (firstRow) {
+                var rowInput = firstRow.querySelector('input[name^="rows["][name$="[position]"]');
+                var pid = getProductIdFromInput(rowInput);
+                if (pid) {
+                    updateStatus(pid, 'dirty');
+                }
+            }
+        }
+    }
+
+    function initRowDnD(){
+        var bodies = document.querySelectorAll('.lp-rows-body');
+        for (var i = 0; i < bodies.length; i++) {
+            (function(tbody){
+                var rows = tbody.querySelectorAll('tr.lp-row');
+                for (var j = 0; j < rows.length; j++) {
+                    (function(row){
+                        var handle = row.querySelector('.lp-row-handle');
+                        if (!handle) {
+                            return;
+                        }
+                        handle.setAttribute('draggable', 'true');
+                        handle.addEventListener('dragstart', function(e){
+                            draggingRow = row;
+                            row.classList.add('lp-dragging');
+                            e.dataTransfer.effectAllowed = 'move';
+                            try {
+                                e.dataTransfer.setData('text/plain', row.getAttribute('data-row-id') || '');
+                            } catch (err) {
+                                // brak wsparcia
+                            }
+                        });
+                        handle.addEventListener('dragend', function(){
+                            if (draggingRow) {
+                                draggingRow.classList.remove('lp-dragging');
+                            }
+                            draggingRow = null;
+                            updateRowPositions(tbody);
+                        });
+                        row.addEventListener('dragover', function(e){
+                            if (!draggingRow || draggingRow === row) {
+                                return;
+                            }
+                            e.preventDefault();
+                            e.dataTransfer.dropEffect = 'move';
+                            var rect = row.getBoundingClientRect();
+                            var before = (e.clientY - rect.top) < rect.height / 2;
+                            if (before) {
+                                if (row.previousSibling !== draggingRow) {
+                                    tbody.insertBefore(draggingRow, row);
+                                }
+                            } else if (row.nextSibling !== draggingRow) {
+                                tbody.insertBefore(draggingRow, row.nextSibling);
+                            }
+                        });
+                        row.addEventListener('drop', function(e){
+                            if (!draggingRow) {
+                                return;
+                            }
+                            e.preventDefault();
+                            updateRowPositions(tbody);
+                        });
+                    })(rows[j]);
+                }
+            })(bodies[i]);
+        }
+    }
         
         
     function getProductIdFromInput(input){
@@ -2068,6 +2179,10 @@ $html .= '</form>';
         match = name.match(/^rows\[(\d+)\]\[value\]\[(\d+)\]$/);
         if (match) {
             return { target: 'row', row_id: match[1], field: 'value', id_lang: match[2] };
+        }
+        match = name.match(/^rows\[(\d+)\]\[position\]$/);
+        if (match) {
+            return { target: 'row', row_id: match[1], field: 'position' };
         }
         return null;
     }
@@ -2184,6 +2299,10 @@ console.groupEnd();
         }
     });
     initGroupDnD();
+    initRowDnD();
+    document.querySelectorAll('.lp-rows-body').forEach(function(body){
+        updateRowPositions(body, true);
+    });
 })();
 JS;
     $html .= '<script>'.$script.'</script>';
@@ -2261,6 +2380,7 @@ protected function renderGroupsEditor(int $pid, array $groups, string $adminActi
                     <table class="table table-condensed">
                         <thead>
                             <tr>
+                                <th style="width:90px">'.$this->l('Pozycja').'</th>
                                 <th style="width:90px">'.$this->l('Row ID').'</th>
                                 <th style="width:90px">'.$this->l('Product ID').'</th>
                                 <th>'.$this->l('Produkt').'</th>
@@ -2271,10 +2391,16 @@ protected function renderGroupsEditor(int $pid, array $groups, string $adminActi
                                 </th>
                             </tr>
                         </thead>
-                        <tbody>';
+                        <tbody class="lp-rows-body">';
 
             foreach ($g['rows'] as $r) {
-                $html .= '<tr>
+                $rowPosition = (int) ($r['position'] ?? 0);
+                $html .= '<tr class="lp-row" data-row-id="'.(int)$r['row_id'].'">
+                    <td>
+                        <span class="lp-row-handle" title="'.$this->l('Przeciągnij, aby zmienić kolejność').'" style="cursor:move;font-size:16px;">☰</span>
+                        <span class="lp-row-position" style="margin-left:6px">'.($rowPosition ?: 0).'</span>
+                        <input type="hidden" name="rows['.(int)$r['row_id'].'][position]" value="'.($rowPosition ?: 0).'" class="lp-watch">
+                    </td>
                     <td>#'.(int)$r['row_id'].'</td>
                     <td>#'.(int)$r['product_id'].'</td>
                     <td>'.htmlspecialchars($r['product_name']).'</td>

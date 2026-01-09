@@ -89,10 +89,15 @@ class ActionProductUpdate extends AbstractHook
                 }
                 $db->delete('po_linkedproduct_row', 'group_id = ' . (int) $groupId);
 
-                foreach ($relatedProducts as $relatedProduct) {
+                $relatedProducts = array_values($relatedProducts);
+                foreach ($relatedProducts as $index => $relatedProduct) {
+                    $rowPosition = isset($relatedProduct['position'])
+                        ? (int) $relatedProduct['position']
+                        : ($index + 1);
                     $db->insert('po_linkedproduct_row', [
                         'group_id' => (int) $groupId,
                         'product_id' => (int) $relatedProduct['product_id'],
+                        'position' => $rowPosition,
                         'value' => ''
                     ]);
                     $rowId = $db->Insert_ID();

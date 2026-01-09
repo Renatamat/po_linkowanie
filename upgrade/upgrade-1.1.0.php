@@ -34,10 +34,16 @@ if (!defined('_PS_VERSION_')) {
  */
 function upgrade_module_1_1_0($module)
 {
-    /*
-     * Do everything you want right there,
-     * You could add a column in one of your module's tables
-     */
+    $db = Db::getInstance();
+    $table = _DB_PREFIX_ . 'po_linkedproduct_row';
+    $columns = $db->executeS('SHOW COLUMNS FROM `' . $table . '` LIKE "position"');
+    $hasPosition = !empty($columns);
+
+    if (!$hasPosition) {
+        if (!$db->execute('ALTER TABLE `' . $table . '` ADD COLUMN `position` INT(11) NOT NULL DEFAULT 0')) {
+            return false;
+        }
+    }
 
     return true;
 }
