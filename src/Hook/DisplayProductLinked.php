@@ -42,7 +42,8 @@ class DisplayProductLinked extends AbstractDisplayHook
                 'FROM ' . _DB_PREFIX_ . 'po_linkedproduct_row r ' .
                 'LEFT JOIN ' . _DB_PREFIX_ . 'po_linkedproduct_row_lang rl ON r.id = rl.id_row AND rl.id_lang = ' . (int) $this->context->language->id . ' ' .
                 'INNER JOIN ' . _DB_PREFIX_ . 'product p ON p.id_product = r.product_id ' .
-                'WHERE r.group_id = ' . (int) $row['id'] . ' ' 
+                'WHERE r.group_id = ' . (int) $row['id'] . ' ' .
+                'ORDER BY r.position ASC, r.id ASC'
             );
             $relatedProducts = [];
             $titles = $db->executeS('SELECT id_lang, group_title FROM ' . _DB_PREFIX_ . 'po_linkedproduct_lang WHERE id = ' . (int) $row['id']);

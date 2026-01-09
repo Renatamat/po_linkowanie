@@ -24,18 +24,24 @@ class DisplayAdminProductsExtra extends AbstractHook
             $productImages = [];
             $languages = Language::getLanguages(false);
             foreach ($result as $row) {
-                $relatedProductsData = $db->executeS('SELECT r.id, r.product_id, rl.id_lang, rl.value FROM ' . _DB_PREFIX_ . 'po_linkedproduct_row r LEFT JOIN ' . _DB_PREFIX_ . 'po_linkedproduct_row_lang rl ON r.id = rl.id_row WHERE r.group_id = ' . (int) $row['id']);
+                $relatedProductsData = $db->executeS('SELECT r.id, r.product_id, r.position, rl.id_lang, rl.value FROM ' . _DB_PREFIX_ . 'po_linkedproduct_row r LEFT JOIN ' . _DB_PREFIX_ . 'po_linkedproduct_row_lang rl ON r.id = rl.id_row WHERE r.group_id = ' . (int) $row['id'] . ' ORDER BY r.position ASC, r.id ASC');
                 $relatedProducts = [];
                 foreach ($relatedProductsData as $rp) {
                     if (!isset($relatedProducts[$rp['product_id']])) {
                         $relatedProducts[$rp['product_id']] = [
                             'product_id' => $rp['product_id'],
                             'value' => [],
+                            'position' => (int) $rp['position'],
                         ];
                     }
                     if ($rp['id_lang']) {
                         $relatedProducts[$rp['product_id']]['value'][$rp['id_lang']] = $rp['value'];
                     }
+                }
+                if ($relatedProducts) {
+                    uasort($relatedProducts, function ($a, $b) {
+                        return (int) $a['position'] <=> (int) $b['position'];
+                    });
                 }
                 $found = false;
                 foreach ($relatedProducts as $relatedProduct) {
