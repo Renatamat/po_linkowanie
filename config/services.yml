@@ -36,6 +36,16 @@ services:
     parent: 'piano.linked_product.hook.abstract_hook'
     public: true
 
+  piano.linked_product.hook.action_object_product_add_after:
+    class: Piano\LinkedProduct\Hook\ActionObjectProductAddAfter
+    parent: 'piano.linked_product.hook.abstract_hook'
+    public: true
+
+  piano.linked_product.hook.action_object_product_update_after:
+    class: Piano\LinkedProduct\Hook\ActionObjectProductUpdateAfter
+    parent: 'piano.linked_product.hook.abstract_hook'
+    public: true
+
   piano.linked_product.hook.display_product_linked:
     class: Piano\LinkedProduct\Hook\DisplayProductLinked
     parent: 'piano.linked_product.hook.abstract_display_hook'
