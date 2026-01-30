@@ -21,10 +21,10 @@
                 </div>
             </div>
             <div class="form-group">
-                <label class="control-label col-lg-3">{l s='Kod rodziny' mod='po_linkedproduct'}</label>
+                <label class="control-label col-lg-3">{l s='Kod rodziny / prefiks referencji' mod='po_linkedproduct'}</label>
                 <div class="col-lg-9">
                     <input type="text" name="po_link_family_key" class="form-control" value="{$feature_assignment.family_key|escape:'html':'UTF-8'}">
-                    <p class="help-block">{l s='Ręczny kod rodziny do grupowania produktów w profilu.' mod='po_linkedproduct'}</p>
+                    <p class="help-block">{l s='Prefix referencji (np. SM-PR01), aby połączyć wszystkie produkty z referencją zaczynającą się od tej wartości.' mod='po_linkedproduct'}</p>
                 </div>
             </div>
         </div>

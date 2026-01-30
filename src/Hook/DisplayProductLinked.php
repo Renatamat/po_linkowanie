@@ -142,12 +142,12 @@ class DisplayProductLinked extends AbstractDisplayHook
             return false;
         }
 
-        $indexRows = $db->executeS('
-            SELECT i.id_product, i.options_json, p.active
-            FROM ' . _DB_PREFIX_ . 'po_link_index i
-            INNER JOIN ' . _DB_PREFIX_ . 'product p ON p.id_product = i.id_product
-            WHERE i.id_profile=' . (int) $profile['id_profile'] . "
-              AND i.family_key='" . pSQL((string) $assignment['family_key']) . "'
+        $indexRows = $db->executeS(
+            'SELECT i.id_product, i.options_json, p.active
+             FROM ' . _DB_PREFIX_ . 'po_link_index i
+             INNER JOIN ' . _DB_PREFIX_ . 'product p ON p.id_product = i.id_product
+             WHERE i.id_profile=' . (int) $profile['id_profile'] . '
+               AND i.family_key=\'' . pSQL((string) $assignment['family_key']) . '\''
         ) ?: [];
 
         if (!$indexRows) {

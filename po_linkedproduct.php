@@ -1558,11 +1558,45 @@ public function saveProductFamilyAssignmentFromRequest(int $productId): bool
     if ($profileId > 0 && $familyKey !== '') {
         $db->execute('REPLACE INTO ' . _DB_PREFIX_ . "po_link_product_family (id_product, id_profile, family_key, updated_at)
             VALUES (" . (int) $productId . ", " . (int) $profileId . ", '" . pSQL($familyKey) . "', NOW())");
+        $this->assignFamilyByReferencePrefix($profileId, $familyKey);
         return true;
     }
 
     $db->delete('po_link_product_family', 'id_product=' . (int) $productId);
     return false;
+}
+
+protected function assignFamilyByReferencePrefix(int $profileId, string $referencePrefix): void
+{
+    if ($profileId <= 0 || $referencePrefix === '') {
+        return;
+    }
+
+    $db = \Db::getInstance();
+    $likePrefix = pSQL(addcslashes($referencePrefix, '%_'));
+    $rows = $db->executeS('
+        SELECT id_product
+        FROM ' . _DB_PREFIX_ . 'product
+        WHERE reference LIKE "' . $likePrefix . '%"
+    ') ?: [];
+
+    if (!$rows) {
+        return;
+    }
+
+    $values = [];
+    foreach ($rows as $row) {
+        $values[] = '(' . (int) $row['id_product'] . ', ' . (int) $profileId . ", '" . pSQL($referencePrefix) . "', NOW())";
+    }
+
+    $chunks = array_chunk($values, 200);
+    foreach ($chunks as $chunk) {
+        $db->execute('REPLACE INTO ' . _DB_PREFIX_ . 'po_link_product_family (id_product, id_profile, family_key, updated_at) VALUES ' . implode(',', $chunk));
+    }
+
+    foreach ($rows as $row) {
+        $this->updateFeatureIndexForProduct((int) $row['id_product']);
+    }
 }
 
 /**
