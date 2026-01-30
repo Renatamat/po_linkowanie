@@ -16,13 +16,14 @@ class ActionProductUpdate extends AbstractHook
         }
 
         $productId = (int) $params['id_product'];
+        $db = Db::getInstance();
+        $this->module->saveProductFamilyAssignmentFromRequest($productId);
+
         $linkingProducts = Tools::getValue('linking_products');
 
         if (!is_array($linkingProducts)) {
             return null;
         }
-
-        $db = Db::getInstance();
         $existingGroups = $this->getExistingGroups($productId, $db);
 
         foreach ($linkingProducts as $linkingProduct) {
@@ -146,4 +147,5 @@ class ActionProductUpdate extends AbstractHook
             $db->delete('po_linkedproduct', 'id = ' . (int) $group['group_id']);
         }
     }
+
 }
