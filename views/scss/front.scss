@@ -1,0 +1,123 @@
+// Zmienne kolorów (fallback na kolory Prestashop)
+$color-text: var(--gray-dark, #333);
+$color-text-muted: #555;
+$color-border: #eee;
+$color-primary: var(--primary, #2fb5d2);
+
+
+
+// Sekcja powiązanych produktów
+.product-linked {
+  margin: 0rem 0 2rem;
+
+  h3 {
+    font-size: 1.4rem;
+    font-weight: 600;
+    margin-bottom: 1rem;
+    padding-bottom: .5rem;
+  }
+}
+
+// Lista tekstowa
+.type-list {
+  list-style: none;
+  padding-left: 0;
+  margin: 0;
+
+  li {
+    a {
+      text-decoration: none;
+      color: $color-text;
+      transition: color .2s;      
+      border:transparent 2px solid;
+      &.active{
+          border-color:#24b9d7;
+      }
+      &:hover {
+        color: $color-primary;
+      }
+    }
+  }
+}
+.type-list-text{
+    display: flex;
+    gap:0.5rem;
+    @media(min-width: 768px){
+        gap: 1rem;
+    }
+    li {
+        a{
+            background: white;
+            padding: 8px 12px;
+            border-color: rgba(0, 0, 0, 0.25);
+            &:hover {
+              //  border-color:  $color-primary;
+            }
+        }
+    }
+}
+
+// Lista miniatur
+.type-list-photo {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+
+  li {
+    // 4 w rzędzie domyślnie
+    flex: 0 0 calc(25% - 8px);
+    text-align: center;
+
+    @media (min-width: 768px) and (max-width: 992px) {
+      // 2 w rzędzie < 768px
+      flex: 0 0 calc(50% - 8px);
+    }
+     @media  (max-width: 500px) {
+      // 2 w rzędzie < 768px
+      flex: 0 0 calc(50% - 8px);
+    }
+
+    a {
+      display: flex;
+      flex-direction: column;
+      background: white;
+      height: 100%;
+      gap: 0;
+      overflow: hidden;
+      transition: all .3s ease-in-out;
+
+      span {
+        transition: all .3s ease-in-out;
+        padding-right: .9375rem;
+        padding-left: .9375rem;
+        padding-bottom: .9375rem;
+        transition: color .2s;
+      }
+    }
+  }
+
+  // kwadratowe miniatury 1:1 bez zmiany HTML
+  img.product-thumbnail {
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    height: auto;              // pozwala aspect-ratio działać
+    object-fit: cover;         // wypełnia kwadrat
+    /*border: 1px solid $color-border;*/
+    border-radius: 4px;
+    margin-bottom: .3rem;
+    transition: all .3s ease-in-out;
+  }
+
+  a:hover {
+    img.product-thumbnail { transform: scale(1.05); }
+    .variant-name { color: inherit; }
+  }
+
+  .variant-name {
+    display: block;
+    font-size: .9rem;
+    color: $color-text-muted;
+    margin-top: .2rem;
+  }
+}
+
