@@ -17,7 +17,7 @@ class ActionProductUpdate extends AbstractHook
 
         $productId = (int) $params['id_product'];
         $db = Db::getInstance();
-        $this->updateProductFamilyAssignment($productId, $db);
+        $this->module->saveProductFamilyAssignmentFromRequest($productId);
 
         $linkingProducts = Tools::getValue('linking_products');
 
@@ -148,16 +148,4 @@ class ActionProductUpdate extends AbstractHook
         }
     }
 
-    private function updateProductFamilyAssignment(int $productId, Db $db): void
-    {
-        $profileId = (int) Tools::getValue('po_link_profile_id');
-        $familyKey = trim((string) Tools::getValue('po_link_family_key'));
-
-        if ($profileId > 0 && $familyKey !== '') {
-            $db->execute('REPLACE INTO ' . _DB_PREFIX_ . "po_link_product_family (id_product, id_profile, family_key, updated_at)
-                VALUES (" . (int) $productId . ", " . (int) $profileId . ", '" . pSQL($familyKey) . "', NOW())");
-        } else {
-            $db->delete('po_link_product_family', 'id_product=' . (int) $productId);
-        }
-    }
 }

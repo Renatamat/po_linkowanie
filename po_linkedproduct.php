@@ -1541,6 +1541,30 @@ public function rebuildFeatureIndex(): int
     return $count;
 }
 
+public function saveProductFamilyAssignmentFromRequest(int $productId): bool
+{
+    if ($productId <= 0) {
+        return false;
+    }
+
+    $profileId = (int) Tools::getValue('po_link_profile_id');
+    $familyKey = trim((string) Tools::getValue('po_link_family_key'));
+    if (Tools::strlen($familyKey) > 64) {
+        $familyKey = Tools::substr($familyKey, 0, 64);
+    }
+
+    $db = \Db::getInstance();
+
+    if ($profileId > 0 && $familyKey !== '') {
+        $db->execute('REPLACE INTO ' . _DB_PREFIX_ . "po_link_product_family (id_product, id_profile, family_key, updated_at)
+            VALUES (" . (int) $productId . ", " . (int) $profileId . ", '" . pSQL($familyKey) . "', NOW())");
+        return true;
+    }
+
+    $db->delete('po_link_product_family', 'id_product=' . (int) $productId);
+    return false;
+}
+
 /**
  * Normalizuje sugerowane grupy do postaci listy nazw oddzielonych przecinkiem.
  * Obsługuje wartości z formularza (tablica ID cech) oraz surowe stringi.

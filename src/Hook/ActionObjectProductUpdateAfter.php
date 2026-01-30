@@ -15,6 +15,7 @@ class ActionObjectProductUpdateAfter extends AbstractHook
         }
 
         if ($productId > 0) {
+            $this->module->saveProductFamilyAssignmentFromRequest($productId);
             $this->module->updateFeatureIndexForProduct($productId);
         }
 
