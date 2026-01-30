@@ -181,12 +181,6 @@ class DisplayProductLinked extends AbstractDisplayHook
             return false;
         }
 
-        foreach ($optionIds as $optionId) {
-            if (!isset($productOptions[$productId][$optionId])) {
-                return false;
-            }
-        }
-
         $valueIds = [];
         foreach ($featureValues as $values) {
             $valueIds = array_merge($valueIds, array_keys($values));
@@ -231,7 +225,7 @@ class DisplayProductLinked extends AbstractDisplayHook
             $labelMap[(int) $row['id_feature']] = $row['label'];
         }
 
-        $currentOptions = $productOptions[$productId];
+        $currentOptions = $productOptions[$productId] ?? [];
         $featurePositions = [];
 
         foreach ($optionIds as $featureId) {
@@ -246,6 +240,9 @@ class DisplayProductLinked extends AbstractDisplayHook
                 foreach ($productOptions as $candidateId => $candidateOptions) {
                     $match = true;
                     foreach ($optionIds as $checkFeatureId) {
+                        if (!isset($expected[$checkFeatureId])) {
+                            continue;
+                        }
                         if (!isset($candidateOptions[$checkFeatureId]) || $candidateOptions[$checkFeatureId] !== $expected[$checkFeatureId]) {
                             $match = false;
                             break;
