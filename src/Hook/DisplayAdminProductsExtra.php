@@ -17,6 +17,8 @@ class DisplayAdminProductsExtra extends AbstractHook
         if (isset($params['id_product'])) {
             $productId = $params['id_product'];
             $db = Db::getInstance();
+            $profiles = $db->executeS('SELECT id_profile, name FROM ' . _DB_PREFIX_ . 'po_link_profile WHERE active=1 ORDER BY name ASC') ?: [];
+            $assignment = $db->getRow('SELECT id_profile, family_key FROM ' . _DB_PREFIX_ . 'po_link_product_family WHERE id_product=' . (int) $productId);
             $sql = 'SELECT pl.id, pl.type, pl.position FROM ' . _DB_PREFIX_ . 'po_linkedproduct pl ORDER BY pl.position ASC';
             $result = $db->executeS($sql);
             $positions = [];
@@ -91,6 +93,8 @@ class DisplayAdminProductsExtra extends AbstractHook
                 'languages' => $languages,
                 'default_form_language' => (int) $this->context->language->id,
                 'default_group_title' => $defaultGroupTitle,
+                'feature_profiles' => $profiles,
+                'feature_assignment' => $assignment ?: ['id_profile' => 0, 'family_key' => ''],
             ]);
         }
         return $this->module->display($this->module->getLocalPath().'po_linkedproduct.php', 'views/templates/hook/repeater.tpl');

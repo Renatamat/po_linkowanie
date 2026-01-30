@@ -1,3 +1,30 @@
+{if $feature_positions}
+    <div class="product-information ">
+        <div class="col-12">
+            <div class="product-linked">
+                {foreach $feature_positions as $feature_position}
+                    <div class="mb-6">
+                        <p class="type-container">{$feature_position.title}</p>
+                        <ul class="type-list type-list-text">
+                            {foreach $feature_position.values as $value}
+                                <li>
+                                    {if $value.disabled || !$value.link}
+                                        <span class="type-list-text">{$value.label}</span>
+                                    {else}
+                                        <a rel="{if $value.link == $page.canonical}nofollow{/if}" href="{$value.link}" class="{if $value.active}active{/if} type-list-text">
+                                            {$value.label}
+                                        </a>
+                                    {/if}
+                                </li>
+                            {/foreach}
+                        </ul>
+                    </div>
+                {/foreach}
+            </div>
+        </div>
+    </div>
+{/if}
+
 {if $positions}
     <div class="product-information ">
         <div class="col-12">
@@ -11,7 +38,7 @@
                                         {foreach $related_products as $related_product}
                                             {assign var="product_link" value=$link->getProductLink($related_product.product_id)}
                                             <li>
-                                                {if $related_product.disabled}
+                                                {if $related_product.disabled || !$related_product.product_id}
                                                     <span class="type-list-text">{$related_product.display_value}</span>
                                                 {else}
                                                     <a rel="{if $product_link == $page.canonical}nofollow{/if}" href="{$product_link}" class="{if $product_link == $page.canonical}active{/if}  type-list-text">
@@ -51,4 +78,5 @@
                   {/foreach}
               </div>
           </div>
-      </div>{/if}
+      </div>
+{/if}
