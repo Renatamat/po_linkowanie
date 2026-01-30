@@ -30,6 +30,10 @@
  * but does not want to loose all of the data associated to the module.
  */
 $sql = array();
+$sql[] = 'DROP TABLE IF EXISTS `' . _DB_PREFIX_ . 'po_link_index`';
+$sql[] = 'DROP TABLE IF EXISTS `' . _DB_PREFIX_ . 'po_link_product_family`';
+$sql[] = 'DROP TABLE IF EXISTS `' . _DB_PREFIX_ . 'po_link_profile_label`';
+$sql[] = 'DROP TABLE IF EXISTS `' . _DB_PREFIX_ . 'po_link_profile`';
 $sql[] = 'DROP TABLE IF EXISTS `' . _DB_PREFIX_ . 'po_linkedproduct_lang`';
 $sql[] = 'DROP TABLE IF EXISTS `' . _DB_PREFIX_ . 'po_linkedproduct_row_lang`';
 $sql[] = 'DROP TABLE IF EXISTS `' . _DB_PREFIX_ . 'po_linkedproduct_row`';
@@ -41,4 +45,3 @@ foreach ($sql as $query) {
         return false;
     }
 }
-

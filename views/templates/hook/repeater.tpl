@@ -3,6 +3,32 @@
 </div>
 <link rel="stylesheet" href="{$app_css}">
 <fieldset>
+    <div class="panel panel-default">
+        <div class="panel-heading">{l s='Łączenie po cechach' mod='po_linkedproduct'}</div>
+        <div class="panel-body">
+            <div class="form-group">
+                <label class="control-label col-lg-3">{l s='Profil linkowania' mod='po_linkedproduct'}</label>
+                <div class="col-lg-9">
+                    <select name="po_link_profile_id" class="form-control">
+                        <option value="0">{l s='Brak (tryb ręczny)' mod='po_linkedproduct'}</option>
+                        {foreach from=$feature_profiles item=profile}
+                            <option value="{$profile.id_profile}"{if $feature_assignment.id_profile == $profile.id_profile} selected{/if}>
+                                {$profile.name|escape:'html':'UTF-8'}
+                            </option>
+                        {/foreach}
+                    </select>
+                    <p class="help-block">{l s='Wybierz profil, aby aktywować linkowanie po cechach dla produktu.' mod='po_linkedproduct'}</p>
+                </div>
+            </div>
+            <div class="form-group">
+                <label class="control-label col-lg-3">{l s='Kod rodziny' mod='po_linkedproduct'}</label>
+                <div class="col-lg-9">
+                    <input type="text" name="po_link_family_key" class="form-control" value="{$feature_assignment.family_key|escape:'html':'UTF-8'}">
+                    <p class="help-block">{l s='Ręczny kod rodziny do grupowania produktów w profilu.' mod='po_linkedproduct'}</p>
+                </div>
+            </div>
+        </div>
+    </div>
     <div class="repeater-default">
         <div data-repeater-list="products" class="drag-positions">
             <div class="panel panel-default data-repeater-item d-none" data-repeater-item>
