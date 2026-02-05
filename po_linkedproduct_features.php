@@ -35,6 +35,8 @@ class Po_linkedproduct_features extends Module
 
         return parent::install()
             && $this->registerHook('displayAdminProductsExtra')
+            && $this->registerHook('displayProductLinked')
+            && $this->registerHook('displayHeader')
             && $this->registerHook('actionProductUpdate')
             && $this->registerHook('actionObjectProductAddAfter')
             && $this->registerHook('actionObjectProductUpdateAfter');
@@ -100,6 +102,39 @@ class Po_linkedproduct_features extends Module
         ]);
 
         return $this->display($this->getLocalPath() . 'po_linkedproduct_features.php', 'views/templates/hook/features_assignment.tpl');
+    }
+
+    public function hookDisplayProductLinked($params)
+    {
+        $hook = new \Piano\LinkedProduct\Hook\DisplayProductLinkedFeatures($this, \Context::getContext());
+
+        return $hook->run($params);
+    }
+
+    public function hookDisplayHeader($params)
+    {
+        $this->context->controller->registerJavascript(
+            'modules-po_linkedproduct_features-powertip',
+            'modules/' . $this->name . '/views/js/jquery.powertip.min.js',
+            ['position' => 'head', 'priority' => 100]
+        );
+
+        $this->context->controller->registerJavascript(
+            'modules-po_linkedproduct_features-front',
+            'modules/' . $this->name . '/views/js/front.js',
+            ['position' => 'bottom', 'priority' => 200]
+        );
+
+        $this->context->controller->registerStylesheet(
+            'modules-po_linkedproduct_features-style',
+            'modules/' . $this->name . '/views/css/jquery.powertip.min.css',
+            ['media' => 'all', 'priority' => 100]
+        );
+        $this->context->controller->registerStylesheet(
+            'modules-po_linkedproduct_features-style-front',
+            'modules/' . $this->name . '/views/css/front.css',
+            ['media' => 'all', 'priority' => 150]
+        );
     }
 
     public function hookActionProductUpdate($params)
